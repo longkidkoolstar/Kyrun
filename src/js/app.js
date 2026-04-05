@@ -42,7 +42,7 @@ const state = {
   isAnonymous: false,
   streamerMode: false,
   cachedPidText: '',
-  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false, holdWhilePressed: false },
+  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false, holdWhilePressed: false, holdBetweenPassesMs: 45 },
   speedMultiplier: 1.0,
   currentView: 'editor',
   hasRobot: false,
@@ -206,7 +206,7 @@ async function openMacro(item) {
   }
   state.currentMacro = { name: data.name||item.name, path: item.path, dirty: false };
   state.commands = data.commands || [];
-  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, holdWhilePressed:false, ...data.settings };
+  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, holdWhilePressed:false, holdBetweenPassesMs:45, ...data.settings };
   state.selectedIndices.clear(); state.undoStack=[]; state.redoStack=[];
   $('#welcome-view').classList.add('hidden');
   $('#settings-view').classList.remove('settings-view--visible');
@@ -238,6 +238,11 @@ function commitMacroSettingsFromUI() {
   }
   if (rd) state.macroSettings.randomDelays = !!rd.checked;
   if (hw) state.macroSettings.holdWhilePressed = !!hw.checked;
+  const hbg = $('#hold-between-passes-ms');
+  if (hbg) {
+    const g = parseInt(hbg.value, 10);
+    state.macroSettings.holdBetweenPassesMs = Number.isFinite(g) && g >= 0 ? Math.min(2000, g) : 0;
+  }
 }
 
 async function saveMacro(opts = {}) {
@@ -453,6 +458,24 @@ function moveSelected(dir) { if(state.selectedIndices.size!==1)return; const i=[
 function toggleBreakpoint(i) { state.commands[i].breakpoint=!state.commands[i].breakpoint; renderCommands(); }
 
 // ── Recording ────────────────────────────────────────────────
+let removeRecordCaptureListener = null;
+
+function recordCaptureFromMain(data) {
+  if (!state.isRecording || !data) return;
+  if (data.kind === 'stop') {
+    stopRecording();
+    return;
+  }
+  addRecordDelay();
+  if (data.kind === 'key') {
+    if (data.cmdType === 'down') state.commands.push({ type: 'KeyDown', keyCode: data.keyCode, device: 1 });
+    else state.commands.push({ type: 'KeyUp', keyCode: data.keyCode, device: 1 });
+  } else if (data.kind === 'mouse') {
+    state.commands.push({ type: data.cmdType });
+  }
+  renderCommands();
+}
+
 function startRecording() {
   if (!state.currentMacro) { showToast('Open a macro first','error'); return; }
   state.isRecording = true;
@@ -460,16 +483,26 @@ function startRecording() {
   pushUndo();
   $('#btn-record').classList.add('toolbar__btn--active');
   $('#btn-record').innerHTML = '<span class="toolbar__btn-icon" style="color:#ef4444">⏺</span> Stop Rec';
-  showToast('Recording... Press keys and click mouse. Press Escape or click Stop Rec to finish.','info');
+  const globalHint = state.hasRobot ? ' Works in other apps too (Windows).' : '';
+  showToast(`Recording... Keys, mouse, and wheel.${globalHint} Escape or Stop Rec to finish.`, 'info');
   document.addEventListener('keydown', recordKeyHandler, true);
   document.addEventListener('keyup', recordKeyUpHandler, true);
   document.addEventListener('mousedown', recordMouseHandler, true);
   document.addEventListener('mouseup', recordMouseUpHandler, true);
   document.addEventListener('wheel', recordWheelHandler, true);
+  if (state.hasRobot && window.kyrun.onRecordCapture && window.kyrun.startGlobalRecordCapture) {
+    removeRecordCaptureListener = window.kyrun.onRecordCapture(recordCaptureFromMain);
+    window.kyrun.startGlobalRecordCapture();
+  }
 }
 
 function stopRecording() {
   state.isRecording = false;
+  if (removeRecordCaptureListener) {
+    removeRecordCaptureListener();
+    removeRecordCaptureListener = null;
+  }
+  if (window.kyrun.stopGlobalRecordCapture) window.kyrun.stopGlobalRecordCapture();
   $('#btn-record').classList.remove('toolbar__btn--active');
   $('#btn-record').innerHTML = '<span class="toolbar__btn-icon">⏺</span> Record';
   document.removeEventListener('keydown', recordKeyHandler, true);
@@ -591,6 +624,7 @@ const KEYRAN_TO_VK = {
   8:8, 9:9, 13:13, 16:16, 17:17, 18:18, // Backspace, Tab, Enter, Shift, Ctrl, Alt
   20:81, // q
   22:83, // s
+  25:86, // v (HID usage 25; Keyran files often omit this index — avoids wrong VK 25)
   26:87, // w
   27:27, 32:32, 33:33, 34:34, 35:35, 36:36, 37:37, 38:38, 39:39, 40:40, // Esc, Space, PgUp, PgDn, End, Home, Arrows
   45:45, 46:46, // Ins, Del
@@ -920,6 +954,9 @@ function updateMacroSettings() {
   $('#loop-count-field').style.display = state.macroSettings.loop?'block':'none';
   const hw = $('#hold-while-pressed');
   if (hw) hw.checked = !!state.macroSettings.holdWhilePressed;
+  const hbg = $('#hold-between-passes-ms');
+  if (hbg) hbg.value = state.macroSettings.holdBetweenPassesMs ?? 45;
+  syncHoldPassGapFieldVisibility();
   $('#random-delays').checked = state.macroSettings.randomDelays;
   $('#bind-key-input').value = state.macroSettings.bindKey||'';
 }
@@ -1263,10 +1300,20 @@ $('#editor-content').addEventListener('click', e => {
 
 // Macro settings
 $('#loop-enabled').onchange = e=>{ state.macroSettings.loop=e.target.checked; $('#loop-count-field').style.display=e.target.checked?'block':'none'; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+function syncHoldPassGapFieldVisibility() {
+  const f = $('#hold-between-passes-field');
+  const hw = $('#hold-while-pressed');
+  if (f && hw) f.style.display = hw.checked ? 'block' : 'none';
+}
 $('#loop-count').oninput = e=>{ const v=parseInt(e.target.value,10); state.macroSettings.loopCount=Number.isFinite(v)&&v>=0?v:0; if(state.currentMacro)state.currentMacro.dirty=true; };
 $('#loop-count').onchange = e=>{ const v=parseInt(e.target.value,10); state.macroSettings.loopCount=Number.isFinite(v)&&v>=0?v:0; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
 const holdWhileEl = $('#hold-while-pressed');
-if (holdWhileEl) holdWhileEl.onchange = e=>{ state.macroSettings.holdWhilePressed=e.target.checked; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+if (holdWhileEl) holdWhileEl.onchange = e=>{ state.macroSettings.holdWhilePressed=e.target.checked; syncHoldPassGapFieldVisibility(); if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+const holdGapEl = $('#hold-between-passes-ms');
+if (holdGapEl) {
+  holdGapEl.oninput = ()=>{ if(state.currentMacro)state.currentMacro.dirty=true; };
+  holdGapEl.onchange = ()=>{ if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+}
 $('#random-delays').onchange = e=>{ state.macroSettings.randomDelays=e.target.checked; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
 $('#bind-key-input').onclick = function() {
   this.value = 'Press a key or mouse button...';

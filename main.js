@@ -25,6 +25,93 @@ let macroAbort = false;
 let mouseTriggerInterval = null; // polling for mouse button triggers
 let mouseTriggerBindings = new Map(); // vkCode → macroId
 
+/** Global macro recording while the window is unfocused (GetAsyncKeyState polling). */
+let recordCaptureInterval = null;
+const recordPrevKeyState = new Uint8Array(256);
+const recordMousePendingUp = new Map(); // vk → true if we recorded a Down outside Kyrun
+
+const MOUSE_RECORD_VKS = [
+  { vk: 0x01, down: 'LeftDown', up: 'LeftUp' },
+  { vk: 0x02, down: 'RightDown', up: 'RightUp' },
+  { vk: 0x04, down: 'MiddleDown', up: 'MiddleUp' },
+  { vk: 0x05, down: 'XButton1Down', up: 'XButton1Up' },
+  { vk: 0x06, down: 'XButton2Down', up: 'XButton2Up' }
+];
+
+function pointInMainWindowScreen(pt) {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const b = mainWindow.getBounds();
+  return pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
+}
+
+function startRecordCapturePolling() {
+  if (recordCaptureInterval || !input) return;
+  recordPrevKeyState.fill(0);
+  recordMousePendingUp.clear();
+  recordCaptureInterval = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const wc = mainWindow.webContents;
+    if (!wc || wc.isDestroyed()) return;
+
+    const cursor = input.getMousePos();
+    const insideKyrun = pointInMainWindowScreen(cursor);
+    const kyrunFocused = mainWindow.isFocused();
+
+    for (const { vk, down, up } of MOUSE_RECORD_VKS) {
+      const pressed = input.isKeyDown(vk);
+      const prev = recordPrevKeyState[vk];
+      if (pressed && !prev) {
+        if (!insideKyrun) {
+          wc.send('record-capture', { kind: 'mouse', cmdType: down });
+          recordMousePendingUp.set(vk, true);
+        }
+        recordPrevKeyState[vk] = 1;
+      } else if (!pressed && prev) {
+        if (recordMousePendingUp.get(vk)) {
+          wc.send('record-capture', { kind: 'mouse', cmdType: up });
+          recordMousePendingUp.delete(vk);
+        }
+        recordPrevKeyState[vk] = 0;
+      } else {
+        recordPrevKeyState[vk] = pressed ? 1 : 0;
+      }
+    }
+
+    if (!kyrunFocused) {
+      if (input.isKeyDown(0x1b) && !recordPrevKeyState[0x1b]) {
+        wc.send('record-capture', { kind: 'stop' });
+        for (let vk = 1; vk < 256; vk++) {
+          recordPrevKeyState[vk] = input.isKeyDown(vk) ? 1 : 0;
+        }
+        return;
+      }
+      for (let vk = 8; vk < 256; vk++) {
+        const pressed = input.isKeyDown(vk);
+        const prev = recordPrevKeyState[vk];
+        if (pressed && !prev) {
+          wc.send('record-capture', { kind: 'key', cmdType: 'down', keyCode: vk });
+        } else if (!pressed && prev) {
+          wc.send('record-capture', { kind: 'key', cmdType: 'up', keyCode: vk });
+        }
+        recordPrevKeyState[vk] = pressed ? 1 : 0;
+      }
+    } else {
+      for (let vk = 8; vk < 256; vk++) {
+        recordPrevKeyState[vk] = input.isKeyDown(vk) ? 1 : 0;
+      }
+    }
+  }, 8);
+}
+
+function stopRecordCapturePolling() {
+  if (recordCaptureInterval) {
+    clearInterval(recordCaptureInterval);
+    recordCaptureInterval = null;
+  }
+  recordPrevKeyState.fill(0);
+  recordMousePendingUp.clear();
+}
+
 /** Global hotkeys (macro binds + profile-switch binds) only fire when true (titlebar or tray). */
 let macroTriggersArmed = false;
 
@@ -77,7 +164,8 @@ function ensureDirectories() {
         loopCount: 1,
         bindKey: '',
         windowBind: '',
-        holdWhilePressed: false
+        holdWhilePressed: false,
+        holdBetweenPassesMs: 45
       }
     };
     fs.writeFileSync(
@@ -376,7 +464,7 @@ function setupIPC() {
       name: name,
       version: '1.0',
       commands: [],
-      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '', holdWhilePressed: false }
+      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '', holdWhilePressed: false, holdBetweenPassesMs: 45 }
     };
     const filePath = path.join(PROFILES_DIR, profile, `${name}.kyrun`);
     fs.writeFileSync(filePath, JSON.stringify(macro, null, 2));
@@ -531,6 +619,15 @@ function setupIPC() {
     const holdActive = !!(settings.triggerFromBind && settings.holdWhilePressed && settings.bindVk > 0);
     const ignoreGoWhile = holdActive;
     const releaseVk = holdActive ? settings.bindVk : 0;
+    let holdPassGapMs = 0;
+    if (holdActive) {
+      const raw = settings.holdBetweenPassesMs;
+      if (raw === undefined || raw === null) holdPassGapMs = 45;
+      else {
+        const n = Number(raw);
+        holdPassGapMs = Number.isFinite(n) && n >= 0 ? Math.min(2000, n) : 45;
+      }
+    }
     const heldKeys = new Set();
     const heldMouse = new Set();
 
@@ -555,6 +652,21 @@ function setupIPC() {
     }
 
     async function sleep(ms) {
+      if (releaseVk) {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+          if (macroAbort) return;
+          if (!input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+          await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
+        }
+      } else {
+        await new Promise(r => setTimeout(r, ms));
+      }
+    }
+
+    /** Between hold-mode passes: no jitter; still abort if trigger released. */
+    async function sleepHoldPassGap(ms) {
+      if (ms <= 0) return;
       if (releaseVk) {
         const deadline = Date.now() + ms;
         while (Date.now() < deadline) {
@@ -655,8 +767,11 @@ function setupIPC() {
 
     try {
       if (holdActive) {
+        let firstHoldPass = true;
         do {
           if (macroAbort) break;
+          if (!firstHoldPass && holdPassGapMs > 0) await sleepHoldPassGap(holdPassGapMs);
+          firstHoldPass = false;
           await runOnce(commands);
         } while (!macroAbort && input.isKeyDown(releaseVk));
       } else if (loopEnabled) {
@@ -686,6 +801,16 @@ function setupIPC() {
   });
 
   ipcMain.handle('is-macro-running', () => macroRunning);
+
+  ipcMain.handle('start-global-record-capture', () => {
+    if (!input) return { success: false };
+    startRecordCapturePolling();
+    return { success: true };
+  });
+  ipcMain.handle('stop-global-record-capture', () => {
+    stopRecordCapturePolling();
+    return true;
+  });
 
   // App info
   ipcMain.handle('get-app-info', () => ({
@@ -753,4 +878,5 @@ app.on('activate', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  stopRecordCapturePolling();
 });

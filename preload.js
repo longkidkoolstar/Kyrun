@@ -52,6 +52,15 @@ contextBridge.exposeInMainWorld('kyrun', {
   registerHotkey: (id, accel) => ipcRenderer.invoke('register-hotkey', id, accel),
   unregisterHotkey: (id) => ipcRenderer.invoke('unregister-hotkey', id),
 
+  startGlobalRecordCapture: () => ipcRenderer.invoke('start-global-record-capture'),
+  stopGlobalRecordCapture: () => ipcRenderer.invoke('stop-global-record-capture'),
+  /** @returns {() => void} unsubscribe */
+  onRecordCapture: (cb) => {
+    const fn = (_, data) => cb(data);
+    ipcRenderer.on('record-capture', fn);
+    return () => ipcRenderer.removeListener('record-capture', fn);
+  },
+
   // ── Events ─────────────────────────────────
   onProfileChanged: (cb) => ipcRenderer.on('profile-changed', (_, name) => cb(name)),
   onAnonymousModeChanged: (cb) => ipcRenderer.on('anonymous-mode-changed', (_, status) => cb(status)),
