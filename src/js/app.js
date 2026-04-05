@@ -50,6 +50,29 @@ const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const getKeyName = c => KEY_CODE_MAP[c] || `Key${c}`;
 
+/** Stable bind label for global shortcuts (Electron); avoids deprecated keyCode mismatches. */
+function keyEventToBindLabel(e) {
+  const code = e.code || '';
+  const km = code.match(/^Key([A-Z])$/);
+  if (km) return km[1];
+  const dig = code.match(/^Digit([0-9])$/);
+  if (dig) return dig[1];
+  const np = code.match(/^Numpad([0-9])$/);
+  if (np) return `Num${np[1]}`;
+  const fk = code.match(/^F([1-9]|1[0-2])$/);
+  if (fk) return `F${fk[1]}`;
+  const codeMap = {
+    Space: 'Space', Enter: 'Enter', Escape: 'Escape', Tab: 'Tab', Backspace: 'Backspace',
+    Delete: 'Delete', Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PgUp', PageDown: 'PgDn',
+    ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Pause: 'Pause', CapsLock: 'CapsLock', NumLock: 'NumLock', ScrollLock: 'ScrollLock',
+    ShiftLeft: 'LShift', ShiftRight: 'RShift', ControlLeft: 'LCtrl', ControlRight: 'RCtrl',
+    AltLeft: 'LAlt', AltRight: 'RAlt'
+  };
+  if (codeMap[code]) return codeMap[code];
+  return getKeyName(e.keyCode);
+}
+
 function showToast(msg, type='info') {
   const t = document.createElement('div');
   t.className = `toast toast--${type}`;
@@ -139,19 +162,23 @@ async function openMacro(item) {
   $('#settings-view').classList.remove('settings-view--visible');
   $('#editor-content').classList.remove('hidden');
   state.currentView = 'editor';
-  updateMacroSettings(); renderCommands(); updateStatusBar();
+  updateMacroSettings();
+  $('#selected-command-props').classList.add('hidden');
+  $('#command-props-content').innerHTML = '';
+  renderCommands(); updateStatusBar();
 }
 
-async function saveMacro() {
+async function saveMacro(opts = {}) {
+  const silent = opts.silent === true;
   if (!state.currentMacro) return;
   const data = { name:state.currentMacro.name, version:'1.0', commands:state.commands, settings:state.macroSettings };
   try {
     await window.kyrun.saveMacroFile(state.currentMacro.path, JSON.stringify(data,null,2));
     state.currentMacro.dirty=false;
-    showToast('Macro saved','success');
-    reloadProfileTriggers(); // Re-apply binds!
+    if (!silent) showToast('Macro saved','success');
+    await reloadProfileTriggers(); // Re-apply binds!
   }
-  catch { showToast('Save failed','error'); }
+  catch { if (!silent) showToast('Save failed','error'); }
   updateStatusBar();
 }
 
@@ -168,8 +195,10 @@ function renderCommands() {
     row.dataset.index = i;
     row.draggable = true;
     const tc = getTypeClass(cmd.type), params = formatParams(cmd);
-    const timing = cmd.type==='Delay'?`${cmd.value}ms` : cmd.type==='RandomDelay'?`${cmd.min}-${cmd.max}ms` : '';
-    row.innerHTML = `<span class="command-row__num">${i+1}</span><span class="command-row__breakpoint ${cmd.breakpoint?'command-row__breakpoint--active':''}" data-bp="${i}"></span><span class="command-row__type ${tc}">${cmd.type}</span><span class="command-row__params">${params}</span><span class="command-row__delay">${timing}</span>`;
+    const timing = cmd.type === 'Delay' ? `${cmd.value} ms`
+      : cmd.type === 'RandomDelay' ? `from ${cmd.min} to ${cmd.max} ms` : '';
+    const typeShown = cmd.type === 'RandomDelay' ? 'Delay' : cmd.type;
+    row.innerHTML = `<span class="command-row__num">${i+1}</span><span class="command-row__breakpoint ${cmd.breakpoint?'command-row__breakpoint--active':''}" data-bp="${i}"></span><span class="command-row__type ${tc}">${typeShown}</span><span class="command-row__params">${params}</span><span class="command-row__delay">${timing}</span>`;
     row.onclick = e => selectCommand(i,e);
     row.ondblclick = () => showCommandProperties(i);
     row.oncontextmenu = e => showCommandContextMenu(e,i);
@@ -182,6 +211,11 @@ function renderCommands() {
     row.ondrop = e => { e.preventDefault(); row.style.borderTop=''; const from=state.dragIndex, to=i; if(from!==to&&from>=0){pushUndo();const c=state.commands.splice(from,1)[0];state.commands.splice(to>from?to-1:to,0,c);state.selectedIndices.clear();state.selectedIndices.add(to>from?to-1:to);state.currentMacro.dirty=true;renderCommands();} };
     body.appendChild(row);
   });
+  if (state.selectedIndices.size) {
+    const hi = Math.max(...state.selectedIndices);
+    const r = body.querySelector(`.command-row[data-index="${hi}"]`);
+    if (r) try { r.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { r.scrollIntoView(); }
+  }
   updateKeyboardViz(); updateStatusBar();
 }
 
@@ -199,7 +233,8 @@ function formatParams(cmd) {
     case 'XButton1Down': return 'Side Button 1 ↓'; case 'XButton1Up': return 'Side Button 1 ↑';
     case 'XButton2Down': return 'Side Button 2 ↓'; case 'XButton2Up': return 'Side Button 2 ↑';
     case 'ScrollUp': return `Scroll Up ×${cmd.value||3}`; case 'ScrollDown': return `Scroll Down ×${cmd.value||3}`;
-    case 'Delay': return `Wait ${cmd.value}ms`; case 'RandomDelay': return `Wait ${cmd.min}-${cmd.max}ms`;
+    case 'Delay': return `Wait ${cmd.value} ms`;
+    case 'RandomDelay': return `Wait from ${cmd.min} to ${cmd.max} ms`;
     case 'MouseMove': return `Move to (${cmd.x}, ${cmd.y})`; case 'GoTo': return `Jump to line ${cmd.targetLine}`;
     case 'GoWhile': return `Loop from line ${cmd.startLine}, ${cmd.count}×`;
     case 'Comment': return `// ${cmd.value}`; case 'ColorDetect': return `Check (${cmd.x},${cmd.y}) #${cmd.color}`;
@@ -225,8 +260,16 @@ function showCommandProperties(idx) {
   switch(cmd.type) {
     case 'KeyDown': case 'KeyUp':
       html = field('Key Code','keyCode','number') + `<div class="properties-panel__field"><label class="properties-panel__label">Key: ${getKeyName(cmd.keyCode)}</label></div>`; break;
-    case 'Delay': html = field('Duration (ms)','value','number'); break;
-    case 'RandomDelay': html = field('Min (ms)','min','number') + field('Max (ms)','max','number'); break;
+    case 'Delay': case 'RandomDelay': {
+      const isR = cmd.type === 'RandomDelay';
+      const fv = cmd.value != null ? cmd.value : 100;
+      const mn = cmd.min != null ? cmd.min : 50;
+      const mx = cmd.max != null ? cmd.max : 150;
+      html = `<div class="properties-panel__field"><label class="properties-panel__label" style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="delay-random-toggle" data-idx="${idx}" ${isR ? 'checked' : ''}> Random delay (min–max ms, Keyran-style)</label></div>`;
+      html += `<div id="delay-fields-fixed" style="display:${isR ? 'none' : 'block'}">${field('Duration (ms)','value','number', fv)}</div>`;
+      html += `<div id="delay-fields-random" style="display:${isR ? 'block' : 'none'}">${field('Min (ms)','min','number', mn)}${field('Max (ms)','max','number', mx)}</div>`;
+      break;
+    }
     case 'MouseMove': html = field('X','x','number') + field('Y','y','number') + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-coords">📍 Pick from Screen</button>`; break;
     case 'GoTo': html = field('Target Line','targetLine','number'); break;
     case 'GoWhile': html = field('Start Line','startLine','number') + field('Loop Count','count','number'); break;
@@ -239,11 +282,32 @@ function showCommandProperties(idx) {
   content.innerHTML = html;
   content.querySelectorAll('input[data-prop],select[data-prop]').forEach(inp => {
     inp.addEventListener('change', e => {
-      const i=parseInt(e.target.dataset.idx), prop=e.target.dataset.prop;
-      const val = e.target.type==='number'?parseInt(e.target.value):e.target.value;
-      pushUndo(); state.commands[i][prop]=val; state.currentMacro.dirty=true; renderCommands();
+      const i=parseInt(e.target.dataset.idx,10), prop=e.target.dataset.prop;
+      const val = e.target.type==='number'?parseInt(e.target.value,10):e.target.value;
+      pushUndo(); state.commands[i][prop]=val; state.currentMacro.dirty=true; renderCommands(); showCommandProperties(i);
     });
   });
+  const delayRandToggle = document.getElementById('delay-random-toggle');
+  if (delayRandToggle) {
+    delayRandToggle.addEventListener('change', () => {
+      const i = parseInt(delayRandToggle.dataset.idx, 10);
+      const c = state.commands[i];
+      if (!c) return;
+      pushUndo();
+      if (delayRandToggle.checked) {
+        const base = c.type === 'Delay' ? (c.value != null ? c.value : 100) : (c.min != null ? c.min : 50);
+        const hi = c.type === 'Delay' ? base + 10 : (c.max != null ? c.max : 150);
+        state.commands[i] = { type: 'RandomDelay', min: Math.min(base, hi), max: Math.max(base, hi) };
+      } else {
+        const v = c.type === 'RandomDelay' ? (c.min != null ? c.min : 100) : (c.value != null ? c.value : 100);
+        state.commands[i] = { type: 'Delay', value: v };
+      }
+      state.currentMacro.dirty = true;
+      renderCommands();
+      state.selectedIndices.clear(); state.selectedIndices.add(i);
+      showCommandProperties(i);
+    });
+  }
   // Coordinate picker
   const pickBtn = document.getElementById('btn-pick-coords');
   if (pickBtn) pickBtn.onclick = async () => {
@@ -258,7 +322,7 @@ function showCommandProperties(idx) {
 
 // ── Add Command ──────────────────────────────────────────────
 function addCommand(type) {
-  if (!state.currentMacro) return;
+  if (!state.currentMacro) { showToast('Open or create a macro first', 'error'); return; }
   pushUndo();
   const insertAt = state.selectedIndices.size>0 ? Math.max(...state.selectedIndices)+1 : state.commands.length;
   let cmd;
@@ -433,7 +497,7 @@ function updateRunningUI(running) {
 
 // ── .amc/.krm Import/Export ──────────────────────────────────
 
-// Keyran codes to Standard VK codes for imports
+// Keyran-specific indices → Windows VK (when file uses Keyran numbering, not HID / not raw VK)
 const KEYRAN_TO_VK = {
   1:1, 2:2, 4:4, // L, R, M mouse
   8:8, 9:9, 13:13, 16:16, 17:17, 18:18, // Backspace, Tab, Enter, Shift, Ctrl, Alt
@@ -446,25 +510,124 @@ const KEYRAN_TO_VK = {
   65:65, 66:66, 67:67, 68:68, 69:69, 70:70, 71:71, 72:72, 73:73, 74:74, 75:75, 76:76, 77:77, // a-m
   78:78, 79:79, 80:80, 81:81, 82:82, 83:83, 84:84, 85:85, 86:86, 87:87, 88:88, 89:89, 90:90, // n-z
   96:96, 97:97, 98:98, 99:99, 100:100, 101:101, 102:102, 103:103, 104:104, 105:105, // Numpad
-  112:112, 113:113, 114:114, 115:115, 116:116, 117:117, 118:118, 119:119, 120:120, 121:121, 122:122, 123:123 // F1-F12
+  112:112, 113:113, 114:114, 115:115, 116:116, 117:117, 118:118, 119:119, 120:120, 121:121, 122:122, 123:123, // F1-F12
+  225:16 // Keyran extended shift → VK_SHIFT
 };
 
+/**
+ * USB HID keyboard usage IDs (decimal) → Windows VK.
+ * Many .amc exports (mouse software, some games) store HID usages: 8=E, 9=F — same numbers Keyran uses for Backspace/Tab.
+ */
+function hidKeyboardUsageToVk(u) {
+  if (u <= 0) return null;
+  // Letters a–z: HID 4–29 → VK A–Z
+  if (u >= 4 && u <= 29) return 65 + (u - 4);
+  // Row 1–0: HID 30–39
+  if (u >= 30 && u <= 38) return 49 + (u - 30); // 1..9
+  if (u === 39) return 48; // 0
+  // HID 40–46 → Enter, Esc, Backspace, Tab, Space (USB HID 0x28–0x2E)
+  if (u === 40) return 13; // Enter
+  if (u === 41) return 27; // Escape
+  if (u === 42) return 8; // Backspace
+  if (u === 43) return 9; // Tab
+  if (u === 44) return 32; // Space
+  if (u === 45) return 189; // -_
+  if (u === 46) return 187; // =+
+  // 47–56: [ ] \ ; ' ` , . /
+  const misc47 = { 47:219,48:221,49:220,50:186,51:222,52:192,53:188,54:190,55:191 };
+  if (misc47[u]) return misc47[u];
+  if (u === 57) return 20; // CapsLock
+  // F1–F12: HID 58–69
+  if (u >= 58 && u <= 69) return 112 + (u - 58);
+  // Nav cluster: 70–83 approx (PrintScreen, ScrollLock, Pause, Insert, Home, etc.) — partial
+  if (u === 73) return 45; // Insert
+  if (u === 74) return 36; // Home
+  if (u === 75) return 33; // PageUp
+  if (u === 76) return 46; // Delete
+  if (u === 77) return 35; // End
+  if (u === 78) return 34; // PageDown
+  if (u === 79) return 39; // Right
+  if (u === 80) return 37; // Left
+  if (u === 81) return 40; // Down
+  if (u === 82) return 38; // Up
+  // Numpad 1–9: HID 89–97, Numpad 0: 98
+  if (u >= 89 && u <= 97) return 97 + (u - 89); // VK_NUMPAD1 = 97 … NUMPAD9 = 105
+  if (u === 98) return 96; // Numpad 0
+  // Left/right modifiers (common in macro tools, decimal 224–231)
+  if (u === 224) return 162; // Left Ctrl
+  if (u === 225) return 160; // Left Shift
+  if (u === 226) return 164; // Left Alt
+  if (u === 227) return 91; // Left Win
+  if (u === 228) return 163; // Right Ctrl
+  if (u === 229) return 161; // Right Shift
+  if (u === 230) return 165; // Right Alt
+  if (u === 231) return 92; // Right Win
+  return null;
+}
+
+function keyranIndexToVk(raw) {
+  return KEYRAN_TO_VK[raw] !== undefined ? KEYRAN_TO_VK[raw] : raw;
+}
+
+function collectRawKeyCodesFromSyntax(text) {
+  const out = [];
+  for (const line of text.split(/\r?\n/)) {
+    const p = line.trim().split(/\s+/);
+    if (p.length >= 2 && /^(KeyDown|KeyUp)$/i.test(p[0])) {
+      const n = parseInt(p[1], 10);
+      if (!isNaN(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
+/** Choose HID vs Keyran table: HID 8,9 = E,F; Keyran 8,9 = Backspace,Tab — same numbers, different meaning. */
+function detectImportKeyCodec(rawCodes) {
+  const uniq = [...new Set(rawCodes)].filter(c => c > 0);
+  if (uniq.length === 0) return 'keyran';
+  // File already stores Windows VK codes (65–90 letters)
+  if (uniq.some(c => c >= 65 && c <= 90)) return 'keyran';
+  // Keyran index 27 = Escape (VK 27); HID usage 27 = X — lone 27 must stay Keyran for Esc macros
+  if (uniq.length === 1 && uniq[0] === 27) return 'keyran';
+
+  let hidLetter = 0, krLetter = 0;
+  for (const raw of uniq) {
+    const h = hidKeyboardUsageToVk(raw);
+    const k = keyranIndexToVk(raw);
+    if (h >= 65 && h <= 90) hidLetter++;
+    if (k >= 65 && k <= 90) krLetter++;
+  }
+  if (hidLetter > krLetter) return 'hid';
+  if (krLetter > hidLetter) return 'keyran';
+  if (uniq.includes(8) && uniq.includes(9)) return 'hid';
+  // Tie: do NOT map lone 8/9 to Keyran — that turns USB E/F into Backspace/Tab. Prefer HID (typical Keyran .amc export).
+  return 'hid';
+}
+
+function importRawKeyCodeToVk(raw, codec) {
+  if (codec === 'hid') {
+    const h = hidKeyboardUsageToVk(raw);
+    if (h != null) return h;
+  }
+  return keyranIndexToVk(raw);
+}
+
 // Parse Keyran syntax lines into command array
-function parseSyntaxLines(text) {
+function parseSyntaxLines(text, codec = 'keyran') {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   const commands = [];
   for (const line of lines) {
     const parts = line.trim().split(/\s+/);
-    const cmd = parts[0].toLowerCase();
+    const cmd = parts[0].replace(/;+$/g, '').toLowerCase();
     switch(cmd) {
       case 'keydown': {
         const raw = parseInt(parts[1])||0;
-        commands.push({type:'KeyDown',keyCode:KEYRAN_TO_VK[raw]||raw,device:parseInt(parts[2])||1});
+        commands.push({type:'KeyDown',keyCode:importRawKeyCodeToVk(raw, codec),device:parseInt(parts[2])||1});
         break;
       }
       case 'keyup': {
         const raw = parseInt(parts[1])||0;
-        commands.push({type:'KeyUp',keyCode:KEYRAN_TO_VK[raw]||raw,device:parseInt(parts[2])||1});
+        commands.push({type:'KeyUp',keyCode:importRawKeyCodeToVk(raw, codec),device:parseInt(parts[2])||1});
         break;
       }
       case 'leftdown': commands.push({type:'LeftDown'}); break;
@@ -477,7 +640,18 @@ function parseSyntaxLines(text) {
       case 'xbutton1up': commands.push({type:'XButton1Up'}); break;
       case 'xbutton2down': commands.push({type:'XButton2Down'}); break;
       case 'xbutton2up': commands.push({type:'XButton2Up'}); break;
-      case 'delay': commands.push({type:'Delay',value:parseInt(parts[1])||100}); break;
+      case 'delay': {
+        const a = parseInt(String(parts[1] || '').replace(/;+$/g, ''), 10) || 100;
+        const bStr = parts[2] !== undefined ? String(parts[2]).replace(/;+$/g, '') : '';
+        const b = bStr !== '' ? parseInt(bStr, 10) : NaN;
+        if (!isNaN(b)) {
+          const lo = Math.min(a, b), hi = Math.max(a, b);
+          commands.push({ type: 'RandomDelay', min: lo, max: hi });
+        } else {
+          commands.push({ type: 'Delay', value: a });
+        }
+        break;
+      }
       case 'gowhile': commands.push({type:'GoWhile',startLine:parseInt(parts[1])||1,count:parseInt(parts[2])||1}); break;
       case 'goto': commands.push({type:'GoTo',targetLine:parseInt(parts[1])||1}); break;
       case 'mousemove': commands.push({type:'MouseMove',x:parseInt(parts[1])||0,y:parseInt(parts[2])||0}); break;
@@ -504,13 +678,16 @@ function parseAmcXml(content) {
     // 4) Any element named Syntax anywhere in the tree
     const syntaxNodes = doc.querySelectorAll('Syntax');
     if (syntaxNodes.length > 0) {
+      let combinedSyntax = '';
+      syntaxNodes.forEach(node => { combinedSyntax += node.textContent + '\n'; });
+      const codec = detectImportKeyCodec(collectRawKeyCodesFromSyntax(combinedSyntax));
       const allCommands = [];
       syntaxNodes.forEach(node => {
-        const cmds = parseSyntaxLines(node.textContent);
+        const cmds = parseSyntaxLines(node.textContent, codec);
         allCommands.push(...cmds);
       });
       if (allCommands.length > 0) {
-        return { commands: allCommands, name: 'Imported Macro' };
+        return { commands: allCommands, name: 'Imported Macro', importCodec: codec };
       }
     }
   }
@@ -520,8 +697,9 @@ function parseAmcXml(content) {
   const knownCmds = ['keydown','keyup','leftdown','leftup','rightdown','rightup','delay','gowhile','goto','mousemove','middledown','middleup','scrollup','scrolldown','xbutton'];
   const firstWord = content.trim().split(/\s+/)[0];
   if (firstWord && knownCmds.some(c => firstWord.toLowerCase().startsWith(c))) {
-    const cmds = parseSyntaxLines(content);
-    if (cmds.length > 0) return { commands: cmds, name: 'Imported Macro' };
+    const codec = detectImportKeyCodec(collectRawKeyCodesFromSyntax(content));
+    const cmds = parseSyntaxLines(content, codec);
+    if (cmds.length > 0) return { commands: cmds, name: 'Imported Macro', importCodec: codec };
   }
 
   return null;
@@ -541,6 +719,7 @@ function exportToAmc(commands) {
       case 'ScrollUp': syntax+=`ScrollUp ${cmd.value||3}\n`; break;
       case 'ScrollDown': syntax+=`ScrollDown ${cmd.value||3}\n`; break;
       case 'Delay': syntax+=`Delay ${cmd.value}\n`; break;
+      case 'RandomDelay': syntax+=`Delay ${cmd.min} ${cmd.max}\n`; break;
       case 'GoWhile': syntax+=`GoWhile ${cmd.startLine} ${cmd.count}\n`; break;
       case 'GoTo': syntax+=`GoTo ${cmd.targetLine}\n`; break;
       case 'MouseMove': syntax+=`MouseMove ${cmd.x} ${cmd.y}\n`; break;
@@ -589,7 +768,8 @@ async function importMacros() {
         const macroData = { name: macroName, version:'1.0', commands: data.commands, settings: data.settings||{} };
         await window.kyrun.saveMacroFile(destName, JSON.stringify(macroData, null, 2));
         lastImported = { name: macroName, path: destName, type: 'macro' };
-        showToast(`Imported "${macroName}" — ${data.commands.length} commands`, 'success');
+        const codecHint = data.importCodec === 'hid' ? ' (USB HID key codes)' : '';
+        showToast(`Imported "${macroName}" — ${data.commands.length} commands${codecHint}`, 'success');
       } else {
         showToast(`Failed to parse: ${f.name} (no commands found)`, 'error');
       }
@@ -624,9 +804,9 @@ function showCommandContextMenu(e,i) {
   e.preventDefault();
   if(!state.selectedIndices.has(i)){state.selectedIndices.clear();state.selectedIndices.add(i);renderCommands();}
   const m=$('#context-menu');
-  m.innerHTML=`<button class="context-menu__item" data-a="cut">✂ Cut<span class="context-menu__shortcut">Ctrl+X</span></button><button class="context-menu__item" data-a="copy">📋 Copy<span class="context-menu__shortcut">Ctrl+C</span></button><button class="context-menu__item" data-a="paste">📌 Paste<span class="context-menu__shortcut">Ctrl+V</span></button><div class="context-menu__separator"></div><button class="context-menu__item" data-a="dup">⧉ Duplicate</button><button class="context-menu__item" data-a="bp">⏸ Toggle Breakpoint</button><div class="context-menu__separator"></div><button class="context-menu__item context-menu__item--danger" data-a="del">🗑 Delete<span class="context-menu__shortcut">Del</span></button>`;
+  m.innerHTML=`<button class="context-menu__item" data-a="edit">✏ Edit properties…</button><div class="context-menu__separator"></div><button class="context-menu__item" data-a="cut">✂ Cut<span class="context-menu__shortcut">Ctrl+X</span></button><button class="context-menu__item" data-a="copy">📋 Copy<span class="context-menu__shortcut">Ctrl+C</span></button><button class="context-menu__item" data-a="paste">📌 Paste<span class="context-menu__shortcut">Ctrl+V</span></button><div class="context-menu__separator"></div><button class="context-menu__item" data-a="dup">⧉ Duplicate</button><button class="context-menu__item" data-a="bp">⏸ Toggle Breakpoint</button><div class="context-menu__separator"></div><button class="context-menu__item context-menu__item--danger" data-a="del">🗑 Delete<span class="context-menu__shortcut">Del</span></button>`;
   posCtx(m,e);
-  m.querySelectorAll('[data-a]').forEach(b=>{b.onclick=()=>{hideCtx();switch(b.dataset.a){case'cut':cutSelected();break;case'copy':copySelected();break;case'paste':pasteCommands();break;case'dup':copySelected();pasteCommands();break;case'bp':toggleBreakpoint(i);break;case'del':deleteSelected();break;}}});
+  m.querySelectorAll('[data-a]').forEach(b=>{b.onclick=()=>{hideCtx();switch(b.dataset.a){case'edit':showCommandProperties(i);break;case'cut':cutSelected();break;case'copy':copySelected();break;case'paste':pasteCommands();break;case'dup':copySelected();pasteCommands();break;case'bp':toggleBreakpoint(i);break;case'del':deleteSelected();break;}}});
 }
 function showFileContextMenu(e,item) {
   e.preventDefault();
@@ -670,15 +850,18 @@ async function deleteMacroFile(item) {
 
 // ── Keyboard Viz Click ───────────────────────────────────────
 $$('.keyboard-viz__key').forEach(key => {
-  key.addEventListener('click', () => {
-    const kc = parseInt(key.dataset.key);
-    if (!state.currentMacro) return;
+  key.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const kc = parseInt(key.dataset.key, 10);
+    if (!state.currentMacro) { showToast('Open or create a macro first', 'error'); return; }
     pushUndo();
     const at = state.selectedIndices.size>0?Math.max(...state.selectedIndices)+1:state.commands.length;
     state.commands.splice(at,0,{type:'KeyDown',keyCode:kc,device:1},{type:'Delay',value:50},{type:'KeyUp',keyCode:kc,device:1});
     state.currentMacro.dirty=true;
     state.selectedIndices.clear(); state.selectedIndices.add(at);
     renderCommands();
+    showCommandProperties(at);
   });
 });
 
@@ -732,6 +915,7 @@ try {
 let activeTriggers = []; // {path, isMouse, vk, bindKey}
 
 async function reloadProfileTriggers() {
+  let firstHotkeyError = null;
   // Unregister all existing
   for (const t of activeTriggers) {
     if (t.isMouse) await window.kyrun.unregisterMouseTrigger(t.vk);
@@ -751,14 +935,24 @@ async function reloadProfileTriggers() {
           if (data && data.settings && (data.settings.bindKey || data.settings.bindVk)) {
             const vk = data.settings.bindVk || 0;
             const isMouse = data.settings.bindIsMouse || false;
+            const macroLabel = data.name || item.name || item.path;
             if (isMouse && vk) {
-              await window.kyrun.registerMouseTrigger(item.path, vk);
-              activeTriggers.push({path: item.path, isMouse: true, vk});
+              const ok = await window.kyrun.registerMouseTrigger(item.path, vk);
+              if (ok) activeTriggers.push({path: item.path, isMouse: true, vk});
+              else if (!firstHotkeyError) firstHotkeyError = `Mouse trigger failed: "${macroLabel}"`;
             } else if (data.settings.bindKey) {
               const electronAc = convertToElectronAccelerator(data.settings.bindKey);
-              if (electronAc) {
-                await window.kyrun.registerHotkey(item.path, electronAc);
-                activeTriggers.push({path: item.path, isMouse: false, bindKey: data.settings.bindKey});
+              if (!electronAc) {
+                if (!firstHotkeyError) {
+                  firstHotkeyError = `Unsupported hotkey "${data.settings.bindKey}" for "${macroLabel}" — use a letter, number, F1–F12, or Space.`;
+                }
+              } else {
+                const ok = await window.kyrun.registerHotkey(item.path, electronAc);
+                if (ok) {
+                  activeTriggers.push({path: item.path, isMouse: false, bindKey: data.settings.bindKey});
+                } else if (!firstHotkeyError) {
+                  firstHotkeyError = `Could not register "${electronAc}" for "${macroLabel}" (in use or blocked by the OS).`;
+                }
               }
             }
           }
@@ -789,6 +983,7 @@ async function reloadProfileTriggers() {
       }
     }
   } catch {}
+  if (firstHotkeyError) showToast(firstHotkeyError, 'error');
 }
 
 function convertToElectronAccelerator(keyname) {
@@ -809,6 +1004,10 @@ function convertToElectronAccelerator(keyname) {
     'Num0':'num0','Num1':'num1','Num2':'num2','Num3':'num3','Num4':'num4',
     'Num5':'num5','Num6':'num6','Num7':'num7','Num8':'num8','Num9':'num9',
     'Num*':'nummult','Num+':'numadd','Num-':'numsub','Num.':'numdec','Num/':'numdiv',
+    // Left/right modifiers → Electron names (single-modifier hotkeys may still fail on some OSes)
+    'LShift':'Shift','RShift':'Shift','Shift':'Shift',
+    'LCtrl':'Control','RCtrl':'Control','Ctrl':'Control',
+    'LAlt':'Alt','RAlt':'Alt','Alt':'Alt'
   };
   if (map[keyname]) return map[keyname];
   return null;
@@ -872,8 +1071,14 @@ $('#btn-move-up').onclick = ()=>moveSelected(-1); $('#btn-move-down').onclick = 
 
 $('#speed-slider').oninput = e=>{ state.speedMultiplier=parseInt(e.target.value)/100; $('#speed-value').textContent=`${e.target.value}%`; };
 
-// Command palette
-$$('.command-palette__btn').forEach(b=>{ b.onclick=()=>addCommand(b.dataset.cmd); });
+// Command palette (delegation — reliable when panel scrolls / repaints)
+$('#editor-content').addEventListener('click', e => {
+  const btn = e.target.closest('.command-palette__btn');
+  if (!btn || !btn.dataset.cmd) return;
+  e.preventDefault();
+  e.stopPropagation();
+  addCommand(btn.dataset.cmd);
+});
 
 // Macro settings
 $('#loop-enabled').onchange = e=>{ state.macroSettings.loop=e.target.checked; $('#loop-count-field').style.display=e.target.checked?'block':'none'; if(state.currentMacro)state.currentMacro.dirty=true; };
@@ -884,13 +1089,14 @@ $('#bind-key-input').onclick = function() {
   const self = this;
   const keyH = e => {
     e.preventDefault();
-    const name = getKeyName(e.keyCode);
+    const name = keyEventToBindLabel(e);
     self.value = name;
     state.macroSettings.bindKey = name;
     state.macroSettings.bindVk = e.keyCode;
     state.macroSettings.bindIsMouse = false;
     if (state.currentMacro) state.currentMacro.dirty = true;
     cleanup();
+    if (state.currentMacro) saveMacro({ silent: true });
   };
   const mouseH = e => {
     if (e.button === 0) return; // ignore left click (that's what opened this)
@@ -904,6 +1110,7 @@ $('#bind-key-input').onclick = function() {
     state.macroSettings.bindIsMouse = true;
     if (state.currentMacro) state.currentMacro.dirty = true;
     cleanup();
+    if (state.currentMacro) saveMacro({ silent: true });
   };
   function cleanup() {
     document.removeEventListener('keydown', keyH);

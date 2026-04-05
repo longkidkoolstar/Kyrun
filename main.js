@@ -23,6 +23,21 @@ let macroAbort = false;
 let mouseTriggerInterval = null; // polling for mouse button triggers
 let mouseTriggerBindings = new Map(); // vkCode → macroId
 
+/** Keyran/Oscar .amc files are often UTF-16 LE; reading as UTF-8 breaks XML/Syntax parsing. */
+function readTextFileAutoEncoding(filePath) {
+  const buf = fs.readFileSync(filePath);
+  if (buf.length < 2) return buf.toString('utf8');
+  // UTF-16 LE BOM
+  if (buf[0] === 0xff && buf[1] === 0xfe) return buf.slice(2).toString('utf16le');
+  // UTF-16 BE BOM
+  if (buf[0] === 0xfe && buf[1] === 0xff) {
+    const body = Buffer.from(buf.slice(2));
+    body.swap16();
+    return body.toString('utf16le');
+  }
+  return buf.toString('utf8');
+}
+
 // ── Ensure directories exist ───────────────────────────────────────
 function ensureDirectories() {
   if (!fs.existsSync(PROFILES_DIR)) {
@@ -340,7 +355,7 @@ function setupIPC() {
     return result.filePaths.map(fp => ({
       path: fp,
       name: path.basename(fp),
-      content: fs.readFileSync(fp, 'utf8')
+      content: readTextFileAutoEncoding(fp)
     }));
   });
 
