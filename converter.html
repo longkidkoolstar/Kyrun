@@ -1,0 +1,297 @@
+<!--
+Keyran Macro converter to AutoHotKey
+Version #1.1
+by Hebbins
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keyran to AutoHotkey Converter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .textarea-container {
+            position: relative;
+        }
+        .copy-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #4A5568;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            opacity: 0.8;
+            transition: opacity 0.3s, transform 0.2s;
+        }
+        .copy-button:hover {
+            opacity: 1;
+        }
+        .copy-button:active {
+            transform: scale(0.95);
+        }
+        input[type=range] {
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+            width: 100%;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            background: #4A5568;
+            height: 0.5rem;
+            border-radius: 0.5rem;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            margin-top: -6px; /* Centers thumb on track */
+            background-color: #2dd4bf;
+            height: 1.5rem;
+            width: 1.5rem;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-5xl bg-gray-800 rounded-xl shadow-2xl p-6 md:p-8">
+
+        <div class="text-center mb-6">
+            <h1 class="text-3xl md:text-4xl font-bold text-cyan-400">Keyran to AutoHotkey Converter</h1>
+            <p class="text-gray-400 mt-2">Paste your full Keyran XML macro to convert it to a togglable AutoHotkey script.</p>
+        </div>
+
+        <!-- Options Section -->
+        <div class="bg-gray-700/50 rounded-lg p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-6">
+            <!-- Hotkey Section -->
+            <div class="flex items-center gap-4">
+                <label for="hotkey-input" class="block text-lg font-semibold text-gray-300">Start/Stop Hotkey:</label>
+                <input type="text" id="hotkey-input" value="F1" class="bg-gray-900 border border-gray-600 rounded-md p-2 text-white w-24 focus:ring-2 focus:ring-cyan-500">
+            </div>
+
+            <!-- Speed Adjustment Section -->
+            <div class="flex-grow w-full sm:w-auto">
+                <label for="speed-adjust" class="block text-lg font-semibold text-gray-300 whitespace-nowrap text-center sm:text-left">Speed Adjustment</label>
+                <p class="text-xs text-gray-400 text-center sm:text-left mb-2">Adjusts the delay times in the macro.</p>
+                <div class="flex items-center gap-4">
+                    <input type="range" id="speed-adjust" min="50" max="150" value="100" class="flex-grow">
+                    <span id="speed-value" class="font-semibold text-cyan-400 w-12 text-center">100%</span>
+                </div>
+            </div>
+        </div>
+
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Keyran Input -->
+            <div class="textarea-container">
+                <label for="keyran-input" class="block text-lg font-semibold mb-2 text-gray-300">Keyran Macro (XML)</label>
+                <textarea id="keyran-input" class="w-full h-96 bg-gray-700 border border-gray-600 rounded-lg p-4 text-gray-200 resize-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500" placeholder="<Root>
+  <DefaultMacro>
+    <KeyDown>
+      <Syntax>
+KeyDown 26 1
+Delay 100
+KeyUp 26 1
+      </Syntax>
+    </KeyDown>
+  </DefaultMacro>
+</Root>"></textarea>
+            </div>
+
+            <!-- AutoHotkey Output -->
+            <div class="textarea-container">
+                <label for="ahk-output" class="block text-lg font-semibold mb-2 text-gray-300">AutoHotkey Script</label>
+                <textarea id="ahk-output" readonly class="w-full h-96 bg-gray-700 border border-gray-600 rounded-lg p-4 text-gray-200 resize-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500" placeholder="; AutoHotkey script will appear here..."></textarea>
+                <button id="copy-btn" class="copy-button">Copy</button>
+            </div>
+        </div>
+
+        <div class="text-center mt-8">
+            <button id="convert-btn" class="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-transform transform hover:scale-105">
+                Convert Script
+            </button>
+        </div>
+        
+        <div id="message-box" class="fixed bottom-5 right-5 bg-green-500 text-white py-2 px-4 rounded-lg shadow-lg hidden animate-pulse">
+            Copied to clipboard!
+        </div>
+
+    </div>
+
+    <script>
+        // --- DOM Element References ---
+        const keyranInput = document.getElementById('keyran-input');
+        const ahkOutput = document.getElementById('ahk-output');
+        const convertBtn = document.getElementById('convert-btn');
+        const copyBtn = document.getElementById('copy-btn');
+        const messageBox = document.getElementById('message-box');
+        const hotkeyInput = document.getElementById('hotkey-input');
+        const speedAdjust = document.getElementById('speed-adjust');
+        const speedValue = document.getElementById('speed-value');
+
+        // --- Keyran Virtual Key Code to AutoHotkey Key Name Mapping ---
+        const keyranKeyCodeMap = {
+            '1': 'LButton', '2': 'RButton', '4': 'MButton',
+            '8': 'BackSpace', '9': 'Tab', '13': 'Enter', '16': 'Shift', '17': 'Control', '18': 'Alt',
+            '20': 'q', '22': 's', '26': 'w', '27': 'Escape', '32': 'Space', '33': 'PgUp', '34': 'PgDn',
+            '35': 'End', '36': 'Home', '37': 'Left', '38': 'Up', '39': 'Right', '40': 'Down',
+            '45': 'Insert', '46': 'Delete',
+            '48': '0', '49': '1', '50': '2', '51': '3', '52': '4', '53': '5', '54': '6', '55': '7', '56': '8', '57': '9',
+            '65': 'a', '66': 'b', '67': 'c', '68': 'd', '69': 'e', '70': 'f', '71': 'g', '72': 'h', '73': 'i', '74': 'j', '75': 'k', '76': 'l', '77': 'm', '78': 'n', '79': 'o', '80': 'p', '81': 'q', '82': 'r', '83': 's', '84': 't', '85': 'u', '86': 'v', '87': 'w', '88': 'x', '89': 'y', '90': 'z',
+            '96': 'Numpad0', '97': 'Numpad1', '98': 'Numpad2', '99': 'Numpad3', '100': 'Numpad4', '101': 'Numpad5', '102': 'Numpad6', '103': 'Numpad7', '104': 'Numpad8', '105': 'Numpad9',
+            '112': 'F1', '113': 'F2', '114': 'F3', '115': 'F4', '116': 'F5', '117': 'F6', '118': 'F7', '119': 'F8', '120': 'F9', '121': 'F10', '122': 'F11', '123': 'F12'
+        };
+
+        // --- Event Listeners ---
+        convertBtn.addEventListener('click', () => {
+            const keyranCode = keyranInput.value.trim();
+            if (!keyranCode) {
+                ahkOutput.value = "; Please paste your Keyran macro first.";
+                return;
+            }
+            ahkOutput.value = convertKeyranToAhk(keyranCode);
+        });
+        
+        speedAdjust.addEventListener('input', () => {
+            speedValue.textContent = `${speedAdjust.value}%`;
+        });
+
+        /**
+         * Translates a single Keyran command line to its AHK equivalent, applying a speed multiplier.
+         */
+        function translateLine(line, speedMultiplier) {
+            const parts = line.trim().split(/\s+/);
+            const command = parts[0].toLowerCase();
+            const args = parts.slice(1);
+            let ahkLine = '';
+
+            switch (command) {
+                case 'leftdown': ahkLine = 'Click, Left, Down'; break;
+                case 'leftup': ahkLine = 'Click, Left, Up'; break;
+                case 'rightdown': ahkLine = 'Click, Right, Down'; break;
+                case 'rightup': ahkLine = 'Click, Right, Up'; break;
+                case 'delay':
+                    const originalDelay = parseInt(args[0], 10);
+                    if (!isNaN(originalDelay)) {
+                        const adjustedDelay = Math.round(originalDelay * speedMultiplier);
+                        ahkLine = `Sleep, ${adjustedDelay}`;
+                    }
+                    break;
+                case 'keydown':
+                case 'keyup':
+                    const ahkKey = keyranKeyCodeMap[args[0]];
+                    if (ahkKey) {
+                        const keyState = command === 'keydown' ? 'Down' : 'Up';
+                        ahkLine = `Send, {${ahkKey} ${keyState}}`;
+                    } else {
+                        ahkLine = `; Unsupported Key Code: ${args[0]}`;
+                    }
+                    break;
+                case 'gowhile':
+                    return null;
+                default:
+                    ahkLine = `; Unrecognized command: ${line.trim()}`;
+                    break;
+            }
+            return ahkLine ? `    ${ahkLine}\n` : `    ; Could not translate line: ${line.trim()}\n`;
+        }
+
+        /**
+         * Converts the full Keyran XML macro to a togglable AutoHotkey script.
+         */
+        function convertKeyranToAhk(keyranCode) {
+            let syntaxContent = '';
+            const speedMultiplier = parseInt(speedAdjust.value, 10) / 100;
+            
+            try {
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(keyranCode, "text/xml");
+                const parseError = xmlDoc.querySelector("parsererror");
+                if (parseError) { return "; XML Parsing Error: Please paste the full, valid XML from the .krm file."; }
+                const syntaxNode = xmlDoc.querySelector("KeyDown > Syntax");
+                if (syntaxNode) { syntaxContent = syntaxNode.textContent; } 
+                else { return "; Conversion Error: Could not find <KeyDown><Syntax> block in the XML."; }
+            } catch (e) { return "; An unexpected error occurred during XML parsing."; }
+
+            const lines = syntaxContent.split(/\r?\n/).filter(line => line.trim() !== '');
+            let scriptBody = '';
+            const goWhileIndex = lines.findIndex(line => line.trim().toLowerCase().startsWith('gowhile'));
+            
+            if (goWhileIndex !== -1) {
+                const goWhileLine = lines[goWhileIndex].trim();
+                const parts = goWhileLine.split(/\s+/);
+                const targetLineNum = parseInt(parts[1], 10);
+                const loopCount = parseInt(parts[2], 10);
+
+                if (!isNaN(targetLineNum) && !isNaN(loopCount)) {
+                    const preLoopEndIndex = targetLineNum - 1;
+                    for (let i = 0; i < preLoopEndIndex; i++) { scriptBody += translateLine(lines[i], speedMultiplier); }
+                    scriptBody += `    ; Start of block looped by GoWhile\n`;
+                    scriptBody += `    Loop, ${loopCount}\n    {\n`;
+                    scriptBody += `        if (!toggle)\n            break\n\n`;      
+                    for (let i = preLoopEndIndex; i < goWhileIndex; i++) { scriptBody += '    ' + translateLine(lines[i], speedMultiplier); }
+                    scriptBody += `    }\n    ; End of looped block\n`;
+                    for (let i = goWhileIndex + 1; i < lines.length; i++) { scriptBody += translateLine(lines[i], speedMultiplier); }
+                } else { scriptBody = '    ; Invalid GoWhile command found.\n'; }
+            } else {
+                 const allLinesTranslated = lines.map(line => translateLine(line, speedMultiplier)).filter(l => l).join('');
+                 scriptBody += `    Loop\n    {\n`;
+                 scriptBody += `        if (!toggle)\n            break\n\n`;
+                 scriptBody += allLinesTranslated.replace(/^/gm, '    ');
+                 scriptBody += `    }\n`;
+            }
+
+            const hotkey = hotkeyInput.value || 'F1';
+            let output = `; Generated by Keyran to AHK Converter\n`;
+            output += `; Press '${hotkey}' to start the macro. Press it again to stop.\n\n`;
+            output += `#SingleInstance force\n`;
+            output += `SetBatchLines, -1      ; Run at max speed\n`;
+            output += `SetKeyDelay, -1, -1    ; Remove delay between keystrokes\n`;
+            output += `SetMouseDelay, -1      ; Remove delay after mouse clicks\n`;
+            output += `CoordMode, Mouse, Screen\n\n`;
+            output += `toggle := false\n`;
+            output += `#MaxThreadsPerHotkey 2\n\n`;
+            output += `${hotkey}::\n`;
+            output += `    toggle := !toggle\n`;
+            output += `    if (!toggle)\n        return\n\n`;
+            output += scriptBody;
+            if (goWhileIndex !== -1) { output += `\n    toggle := false ; Reset toggle after macro finishes\n`; }
+            output += `Return\n`;
+            return output;
+        }
+
+        // --- Clipboard Logic ---
+        copyBtn.addEventListener('click', () => {
+            if (ahkOutput.value) {
+                ahkOutput.select();
+                ahkOutput.setSelectionRange(0, 99999);
+                try {
+                    document.execCommand('copy');
+                    showMessageBox('Copied to clipboard!');
+                } catch (err) {
+                    showMessageBox('Failed to copy!', true);
+                }
+                window.getSelection().removeAllRanges();
+            } else { showMessageBox('Nothing to copy!', true); }
+        });
+
+        function showMessageBox(message, isError = false) {
+            messageBox.textContent = message;
+            messageBox.className = 'fixed bottom-5 right-5 text-white py-2 px-4 rounded-lg shadow-lg';
+            messageBox.classList.add(isError ? 'bg-red-500' : 'bg-green-500');
+            messageBox.classList.remove('hidden');
+            setTimeout(() => { messageBox.classList.add('hidden'); }, 2000);
+        }
+    </script>
+
+</body>
+</html>
