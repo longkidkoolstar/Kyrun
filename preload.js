@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('kyrun', {
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   getMacroTriggersState: () => ipcRenderer.invoke('get-macro-triggers-state'),
   setMacroTriggersArmed: (armed) => ipcRenderer.invoke('set-macro-triggers-armed', armed),
+  reapplyTriggersToggleBind: () => ipcRenderer.invoke('reapply-triggers-toggle-bind'),
 
   // ── Profiles ───────────────────────────────
   getProfiles: () => ipcRenderer.invoke('get-profiles'),

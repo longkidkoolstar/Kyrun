@@ -355,6 +355,23 @@
                 <span class="toggle-switch__slider"></span>
               </label>
             </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Hotkeys toggle bind</div>
+                <div class="settings-view__row-desc">Use a global key or mouse button to turn macro and profile hotkeys on or off (same as the titlebar “Hotkeys” indicator). Works even while hotkeys are off so you can turn them back on.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-triggers-toggle-enabled">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Toggle shortcut</div>
+                <div class="settings-view__row-desc">Click the field, then press a key or a mouse button (middle, right, or side). Right-click the field to clear.</div>
+              </div>
+              <input type="text" class="properties-panel__input" style="width:160px;cursor:pointer;" id="setting-triggers-toggle-bind" readonly placeholder="Not set" title="Click to bind · Right-click to clear">
+            </div>
           </div>
 
           <div class="settings-view__group">

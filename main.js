@@ -24,6 +24,10 @@ let macroRunning = false;
 let macroAbort = false;
 let mouseTriggerInterval = null; // polling for mouse button triggers
 let mouseTriggerBindings = new Map(); // vkCode → macroId
+/** Special macroId: fires even when macro triggers are disarmed (toggles armed state). */
+const TOGGLE_TRIGGERS_ID = '!kyrun:toggle-triggers';
+let triggersToggleAccelRegistered = null;
+let triggersToggleMouseVk = null;
 
 /** Global macro recording while the window is unfocused (GetAsyncKeyState polling). */
 let recordCaptureInterval = null;
@@ -198,8 +202,74 @@ function loadSettings() {
     /** Global default: apply ±20% delay jitter (same as per-macro Randomize delays). */
     randomTiming: true,
     profileHotkeys: {},
+    /** When true, register a global key/mouse bind that toggles macro hotkeys armed (titlebar). */
+    triggersToggleBindEnabled: false,
+    triggersToggleBindKey: '',
+    triggersToggleBindVk: 0,
+    triggersToggleBindIsMouse: false,
     ...raw
   };
+}
+
+/** Same rules as renderer `convertToElectronAccelerator` — keyboard-only. */
+function keyNameToElectronAccelerator(keyname) {
+  if (!keyname) return null;
+  if (keyname.includes('Mouse')) return null;
+  if (/^[A-Z0-9]$/i.test(keyname)) return keyname.toUpperCase();
+  if (/^F([1-9]|1[0-2])$/i.test(keyname)) return keyname.toUpperCase();
+  const map = {
+    Space: 'Space', Enter: 'Return', Escape: 'Escape', Tab: 'Tab',
+    Backspace: 'Backspace', Delete: 'Delete', Insert: 'Insert',
+    Home: 'Home', End: 'End', PgUp: 'PageUp', PgDn: 'PageDown',
+    Up: 'Up', Down: 'Down', Left: 'Left', Right: 'Right',
+    Pause: 'Pause', CapsLock: 'CapsLock', NumLock: 'NumLock', ScrollLock: 'ScrollLock',
+    Num0: 'num0', Num1: 'num1', Num2: 'num2', Num3: 'num3', Num4: 'num4',
+    Num5: 'num5', Num6: 'num6', Num7: 'num7', Num8: 'num8', Num9: 'num9',
+    'Num*': 'nummult', 'Num+': 'numadd', 'Num-': 'numsub', 'Num.': 'numdec', 'Num/': 'numdiv',
+    LShift: 'Shift', RShift: 'Shift', Shift: 'Shift',
+    LCtrl: 'Control', RCtrl: 'Control', Ctrl: 'Control',
+    LAlt: 'Alt', RAlt: 'Alt', Alt: 'Alt'
+  };
+  if (map[keyname]) return map[keyname];
+  return null;
+}
+
+function unregisterTriggersToggleBind() {
+  if (triggersToggleAccelRegistered) {
+    try { globalShortcut.unregister(triggersToggleAccelRegistered); } catch (_) {}
+    triggersToggleAccelRegistered = null;
+  }
+  if (triggersToggleMouseVk != null) {
+    mouseTriggerBindings.delete(triggersToggleMouseVk);
+    triggersToggleMouseVk = null;
+    if (mouseTriggerBindings.size === 0) stopMouseTriggerPolling();
+  }
+}
+
+function applyTriggersToggleBind(settings) {
+  unregisterTriggersToggleBind();
+  if (!settings || !settings.triggersToggleBindEnabled) return;
+  const vk = settings.triggersToggleBindVk || 0;
+  const isMouse = !!settings.triggersToggleBindIsMouse;
+  const keyName = settings.triggersToggleBindKey || '';
+  if (isMouse) {
+    if (!input || !vk) return;
+    mouseTriggerBindings.set(vk, TOGGLE_TRIGGERS_ID);
+    triggersToggleMouseVk = vk;
+    startMouseTriggerPolling();
+    return;
+  }
+  const accel = keyNameToElectronAccelerator(keyName);
+  if (!accel) return;
+  try {
+    globalShortcut.register(accel, () => {
+      macroTriggersArmed = !macroTriggersArmed;
+      sendMacroTriggersState();
+    });
+    triggersToggleAccelRegistered = accel;
+  } catch (_) {
+    triggersToggleAccelRegistered = null;
+  }
 }
 
 function saveSettings(settings) {
@@ -408,6 +478,12 @@ function setupIPC() {
   ipcMain.handle('get-settings', () => loadSettings());
   ipcMain.handle('save-settings', (_, settings) => {
     saveSettings(settings);
+    applyTriggersToggleBind(appSettings);
+    return true;
+  });
+
+  ipcMain.handle('reapply-triggers-toggle-bind', () => {
+    applyTriggersToggleBind(appSettings);
     return true;
   });
 
@@ -661,7 +737,12 @@ function setupIPC() {
           await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
         }
       } else {
-        await new Promise(r => setTimeout(r, ms));
+        // Chunk delays so Stop / switching to another macro is not blocked for the full Delay duration.
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+          if (macroAbort) return;
+          await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
+        }
       }
     }
 
@@ -676,7 +757,11 @@ function setupIPC() {
           await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
         }
       } else {
-        await new Promise(r => setTimeout(r, ms));
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+          if (macroAbort) return;
+          await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
+        }
       }
     }
 
@@ -836,8 +921,13 @@ function startMouseTriggerPolling() {
       const pressed = input.isKeyDown(vkCode);
       const wasPressed = mouseButtonStates.get(vkCode) || false;
       if (pressed && !wasPressed) {
-        if (!macroTriggersEffectivelyArmed()) continue;
-        if (mainWindow) mainWindow.webContents.send('hotkey-triggered', macroId);
+        if (macroId === TOGGLE_TRIGGERS_ID) {
+          macroTriggersArmed = !macroTriggersArmed;
+          sendMacroTriggersState();
+        } else {
+          if (!macroTriggersEffectivelyArmed()) continue;
+          if (mainWindow) mainWindow.webContents.send('hotkey-triggered', macroId);
+        }
       }
       mouseButtonStates.set(vkCode, pressed);
     }
@@ -862,6 +952,7 @@ app.whenReady().then(() => {
   if (appSettings.anonymousOnStartup) {
     setAnonymousMode(true);
   }
+  applyTriggersToggleBind(appSettings);
   sendMacroTriggersState();
 });
 

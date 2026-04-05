@@ -1121,6 +1121,7 @@ async function reloadProfileTriggers() {
   }
   activeTriggers = [];
 
+  try {
   // When hotkeys are off, do not register globalShortcut / mouse polling — otherwise the OS still
   // captures those keys and other apps (and games) never receive them.
   if (!state.macroTriggers.armed) return;
@@ -1190,6 +1191,9 @@ async function reloadProfileTriggers() {
     }
   } catch {}
   if (firstHotkeyError) showToast(firstHotkeyError, 'error');
+  } finally {
+    try { await window.kyrun.reapplyTriggersToggleBind(); } catch {}
+  }
 }
 
 function profileMouseBindToVk(bindKey) {
@@ -1442,12 +1446,20 @@ async function renderProfileHotkeys() {
   } catch {}
 }
 
+function syncTriggersToggleBindUi() {
+  const en = $('#setting-triggers-toggle-enabled');
+  const bind = $('#setting-triggers-toggle-bind');
+  if (bind) bind.disabled = !!(en && !en.checked);
+}
+
 async function loadSettingsToForm() {
   try {
     const s = await window.kyrun.getSettings();
     const mt = $('#setting-minimize-tray');
     const sm = $('#setting-start-minimized');
     const st = $('#setting-streamer-mode');
+    const tte = $('#setting-triggers-toggle-enabled');
+    const ttb = $('#setting-triggers-toggle-bind');
     const ao = $('#setting-anonymous-startup');
     const rt = $('#setting-random-timing');
     const dd = $('#setting-default-delay');
@@ -1455,10 +1467,13 @@ async function loadSettingsToForm() {
     if (mt) mt.checked = s.minimizeToTray !== false;
     if (sm) sm.checked = !!s.startMinimized;
     if (st) st.checked = !!s.streamerMode;
+    if (tte) tte.checked = !!s.triggersToggleBindEnabled;
+    if (ttb) ttb.value = s.triggersToggleBindKey || '';
     if (ao) ao.checked = !!s.anonymousOnStartup;
     if (rt) rt.checked = s.randomTiming !== false;
     if (dd) dd.value = s.defaultDelay != null ? s.defaultDelay : 50;
     if (cm) cm.value = s.coordinateMode || 'absolute';
+    syncTriggersToggleBindUi();
   } catch {}
 }
 
@@ -1482,8 +1497,68 @@ function wireSettingsControls() {
   onToggle('#setting-minimize-tray', 'minimizeToTray');
   onToggle('#setting-start-minimized', 'startMinimized');
   onToggle('#setting-streamer-mode', 'streamerMode');
+  onToggle('#setting-triggers-toggle-enabled', 'triggersToggleBindEnabled', syncTriggersToggleBindUi);
   onToggle('#setting-anonymous-startup', 'anonymousOnStartup');
   onToggle('#setting-random-timing', 'randomTiming');
+
+  const ttBind = $('#setting-triggers-toggle-bind');
+  if (ttBind) {
+    ttBind.onclick = async function () {
+      if (ttBind.disabled) return;
+      this.value = 'Press key or mouse...';
+      const self = this;
+      const keyH = async e => {
+        e.preventDefault();
+        const name = keyEventToBindLabel(e);
+        self.value = name;
+        cleanup();
+        try {
+          const settings = await window.kyrun.getSettings();
+          settings.triggersToggleBindKey = name;
+          settings.triggersToggleBindVk = e.keyCode;
+          settings.triggersToggleBindIsMouse = false;
+          await window.kyrun.saveSettings(settings);
+          showToast('Toggle shortcut saved', 'success');
+        } catch {}
+      };
+      const mouseH = async e => {
+        if (e.button === 0) return;
+        e.preventDefault(); e.stopPropagation();
+        const names = { 1: 'Middle Mouse', 2: 'Right Mouse', 3: 'Mouse X1 (Side)', 4: 'Mouse X2 (Side)' };
+        const vkCodes = { 1: 4, 2: 2, 3: 5, 4: 6 };
+        const name = names[e.button] || `Mouse ${e.button}`;
+        self.value = name;
+        cleanup();
+        try {
+          const settings = await window.kyrun.getSettings();
+          settings.triggersToggleBindKey = name;
+          settings.triggersToggleBindVk = vkCodes[e.button] || e.button;
+          settings.triggersToggleBindIsMouse = true;
+          await window.kyrun.saveSettings(settings);
+          showToast('Toggle shortcut saved', 'success');
+        } catch {}
+      };
+      function cleanup() {
+        document.removeEventListener('keydown', keyH);
+        document.removeEventListener('mousedown', mouseH);
+      }
+      document.addEventListener('keydown', keyH);
+      document.addEventListener('mousedown', mouseH);
+    };
+    ttBind.oncontextmenu = async e => {
+      e.preventDefault();
+      if (ttBind.disabled) return;
+      try {
+        const settings = await window.kyrun.getSettings();
+        settings.triggersToggleBindKey = '';
+        settings.triggersToggleBindVk = 0;
+        settings.triggersToggleBindIsMouse = false;
+        await window.kyrun.saveSettings(settings);
+        ttBind.value = '';
+        showToast('Toggle shortcut cleared', 'info');
+      } catch {}
+    };
+  }
 
   const dd = $('#setting-default-delay');
   if (dd) {
