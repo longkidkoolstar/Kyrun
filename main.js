@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-// Load native input simulator (koffi FFI → Windows SendInput)
+// Load native input simulator (koffi FFI → user32 SendInput)
 let input = null;
 try { input = require('./src/native/input.js'); console.log('Native input loaded via koffi'); } catch(e) { console.log('Native input not available:', e.message); }
 

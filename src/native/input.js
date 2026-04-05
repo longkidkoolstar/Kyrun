@@ -1,38 +1,58 @@
 // ═══════════════════════════════════════════════════════════════
-// Kyrun — Windows Input Simulator via koffi FFI
-// Uses keybd_event / mouse_event (simple flat calls, no struct issues)
+// Kyrun — Windows input via SendInput (koffi FFI)
+// Uses SendInput instead of legacy keybd_event/mouse_event so injected
+// events follow the same path most games and macro tools expect.
+// Note: titles with kernel anti-cheat may still block all user-mode
+// synthetic input; driver-level tools are outside this app’s scope.
 // ═══════════════════════════════════════════════════════════════
 const koffi = require('koffi');
 
 const user32 = koffi.load('user32.dll');
 const gdi32 = koffi.load('gdi32.dll');
 
-// ── Structures (only used for simple queries) ────────────────
-const POINT = koffi.struct('POINT', { x: 'int32', y: 'int32' });
+const KEYBDINPUT = koffi.struct('KEYBDINPUT_Kyrun', {
+  wVk: 'uint16',
+  wScan: 'uint16',
+  dwFlags: 'uint32',
+  time: 'uint32',
+  dwExtraInfo: 'uintptr'
+});
+const MOUSEINPUT = koffi.struct('MOUSEINPUT_Kyrun', {
+  dx: 'int32',
+  dy: 'int32',
+  mouseData: 'uint32',
+  dwFlags: 'uint32',
+  time: 'uint32',
+  dwExtraInfo: 'uintptr'
+});
+const INPUT_UNION = koffi.union('INPUT_UNION_Kyrun', {
+  mi: MOUSEINPUT,
+  ki: KEYBDINPUT
+});
+const INPUT = koffi.struct('INPUT_Kyrun', {
+  type: 'uint32',
+  u: INPUT_UNION
+});
 
-// ── Win32 Functions ──────────────────────────────────────────
-// Legacy input functions — flat params, no struct alignment issues
-const keybd_event = user32.func('void keybd_event(uint8 bVk, uint8 bScan, uint32 dwFlags, uintptr dwExtraInfo)');
-const mouse_event = user32.func('void mouse_event(uint32 dwFlags, uint32 dx, uint32 dy, uint32 dwData, uintptr dwExtraInfo)');
+const SendInput = user32.func('uint32 SendInput(uint32 cInputs, INPUT_Kyrun *pInputs, int32 cbSize)');
 const MapVirtualKeyW = user32.func('uint32 MapVirtualKeyW(uint32 uCode, uint32 uMapType)');
 
-// Cursor / Screen
+const POINT = koffi.struct('POINT', { x: 'int32', y: 'int32' });
 const GetCursorPos = user32.func('bool GetCursorPos(_Out_ POINT *lpPoint)');
 const SetCursorPos = user32.func('bool SetCursorPos(int X, int Y)');
 const GetSystemMetrics = user32.func('int GetSystemMetrics(int nIndex)');
 const GetAsyncKeyState = user32.func('int16 GetAsyncKeyState(int vKey)');
 
-// Pixel color
 const GetDC = user32.func('intptr GetDC(intptr hWnd)');
 const GetPixel = gdi32.func('uint32 GetPixel(intptr hdc, int x, int y)');
 const ReleaseDC = user32.func('int ReleaseDC(intptr hWnd, intptr hDC)');
 
-// ── Constants ────────────────────────────────────────────────
+const INPUT_KEYBOARD = 1;
+const INPUT_MOUSE = 0;
+
 const KEYEVENTF_KEYUP = 0x0002;
-const KEYEVENTF_SCANCODE = 0x0008;
 const KEYEVENTF_EXTENDEDKEY = 0x0001;
 
-const MOUSEEVENTF_MOVE = 0x0001;
 const MOUSEEVENTF_LEFTDOWN = 0x0002;
 const MOUSEEVENTF_LEFTUP = 0x0004;
 const MOUSEEVENTF_RIGHTDOWN = 0x0008;
@@ -42,60 +62,110 @@ const MOUSEEVENTF_MIDDLEUP = 0x0040;
 const MOUSEEVENTF_XDOWN = 0x0080;
 const MOUSEEVENTF_XUP = 0x0100;
 const MOUSEEVENTF_WHEEL = 0x0800;
-const MOUSEEVENTF_ABSOLUTE = 0x8000;
 
 const XBUTTON1 = 0x0001;
 const XBUTTON2 = 0x0002;
 const SM_CXSCREEN = 0;
 const SM_CYSCREEN = 1;
 
-// Extended keys that need KEYEVENTF_EXTENDEDKEY flag
+const INPUT_SIZE = koffi.sizeof(INPUT);
+
 const EXTENDED_KEYS = new Set([
-  0x21, 0x22, 0x23, 0x24, // PgUp, PgDn, End, Home
-  0x25, 0x26, 0x27, 0x28, // Arrow keys
-  0x2D, 0x2E,             // Insert, Delete
-  0x5B, 0x5C,             // Left/Right Windows key
-  0x6F,                   // Numpad Divide
-  0x90,                   // NumLock
+  0x21, 0x22, 0x23, 0x24,
+  0x25, 0x26, 0x27, 0x28,
+  0x2d, 0x2e,
+  0x5b, 0x5c,
+  0x6f,
+  0x90
 ]);
 
-// ── Public API ───────────────────────────────────────────────
+function sendKeyboard(vk, keyUp) {
+  const scan = MapVirtualKeyW(vk, 0) & 0xffff;
+  let flags = keyUp ? KEYEVENTF_KEYUP : 0;
+  if (EXTENDED_KEYS.has(vk)) flags |= KEYEVENTF_EXTENDEDKEY;
+  const inp = {
+    type: INPUT_KEYBOARD,
+    u: {
+      ki: {
+        wVk: vk & 0xffff,
+        wScan: scan,
+        dwFlags: flags,
+        time: 0,
+        dwExtraInfo: 0
+      }
+    }
+  };
+  SendInput(1, [inp], INPUT_SIZE);
+}
+
+function sendMouse(dwFlags, mouseData = 0) {
+  const inp = {
+    type: INPUT_MOUSE,
+    u: {
+      mi: {
+        dx: 0,
+        dy: 0,
+        mouseData: mouseData >>> 0,
+        dwFlags,
+        time: 0,
+        dwExtraInfo: 0
+      }
+    }
+  };
+  SendInput(1, [inp], INPUT_SIZE);
+}
+
 module.exports = {
   keyDown(vk) {
-    const scan = MapVirtualKeyW(vk, 0);
-    const flags = EXTENDED_KEYS.has(vk) ? KEYEVENTF_EXTENDEDKEY : 0;
-    keybd_event(vk & 0xFF, scan & 0xFF, flags, 0);
+    sendKeyboard(vk, false);
   },
 
   keyUp(vk) {
-    const scan = MapVirtualKeyW(vk, 0);
-    const flags = KEYEVENTF_KEYUP | (EXTENDED_KEYS.has(vk) ? KEYEVENTF_EXTENDEDKEY : 0);
-    keybd_event(vk & 0xFF, scan & 0xFF, flags, 0);
+    sendKeyboard(vk, true);
   },
 
   mouseDown(button) {
-    switch(button) {
-      case 'left': mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); break;
-      case 'right': mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0); break;
-      case 'middle': mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0); break;
-      case 'x1': mouse_event(MOUSEEVENTF_XDOWN, 0, 0, XBUTTON1, 0); break;
-      case 'x2': mouse_event(MOUSEEVENTF_XDOWN, 0, 0, XBUTTON2, 0); break;
+    switch (button) {
+      case 'left':
+        sendMouse(MOUSEEVENTF_LEFTDOWN);
+        break;
+      case 'right':
+        sendMouse(MOUSEEVENTF_RIGHTDOWN);
+        break;
+      case 'middle':
+        sendMouse(MOUSEEVENTF_MIDDLEDOWN);
+        break;
+      case 'x1':
+        sendMouse(MOUSEEVENTF_XDOWN, XBUTTON1);
+        break;
+      case 'x2':
+        sendMouse(MOUSEEVENTF_XDOWN, XBUTTON2);
+        break;
     }
   },
 
   mouseUp(button) {
-    switch(button) {
-      case 'left': mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); break;
-      case 'right': mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0); break;
-      case 'middle': mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0); break;
-      case 'x1': mouse_event(MOUSEEVENTF_XUP, 0, 0, XBUTTON1, 0); break;
-      case 'x2': mouse_event(MOUSEEVENTF_XUP, 0, 0, XBUTTON2, 0); break;
+    switch (button) {
+      case 'left':
+        sendMouse(MOUSEEVENTF_LEFTUP);
+        break;
+      case 'right':
+        sendMouse(MOUSEEVENTF_RIGHTUP);
+        break;
+      case 'middle':
+        sendMouse(MOUSEEVENTF_MIDDLEUP);
+        break;
+      case 'x1':
+        sendMouse(MOUSEEVENTF_XUP, XBUTTON1);
+        break;
+      case 'x2':
+        sendMouse(MOUSEEVENTF_XUP, XBUTTON2);
+        break;
     }
   },
 
   scroll(amount) {
-    // amount > 0 = up, < 0 = down. WHEEL_DELTA = 120
-    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, (amount * 120) >>> 0, 0);
+    sendMouse(MOUSEEVENTF_WHEEL, (amount * 120) >>> 0);
   },
 
   moveMouse(x, y) {
@@ -112,9 +182,9 @@ module.exports = {
     const hdc = GetDC(0);
     const color = GetPixel(hdc, x, y);
     ReleaseDC(0, hdc);
-    const r = color & 0xFF;
-    const g = (color >> 8) & 0xFF;
-    const b = (color >> 16) & 0xFF;
+    const r = color & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = (color >> 16) & 0xff;
     return ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
   },
 

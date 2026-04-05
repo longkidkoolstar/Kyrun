@@ -50,6 +50,40 @@ const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const getKeyName = c => KEY_CODE_MAP[c] || `Key${c}`;
 
+/** querySelector('[data-path="..."]') breaks on paths with () or other special chars — compare in JS instead */
+function findFileTreeItemByPath(relPath) {
+  return [...document.querySelectorAll('.file-tree__item')].find(el => el.dataset.path === relPath);
+}
+
+function sanitizeMacroFilenameBase(name) {
+  if (!name || typeof name !== 'string') return 'Imported';
+  let s = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim();
+  if (!s || s === '.' || s === '..') s = 'Imported';
+  if (s.length > 100) s = s.slice(0, 100);
+  return s;
+}
+
+function collectMacroRelPaths(items, out = []) {
+  for (const it of items || []) {
+    if (it.type === 'folder' && it.children) collectMacroRelPaths(it.children, out);
+    else if (it.type === 'macro') out.push(it.path);
+  }
+  return out;
+}
+
+/** Avoid overwriting; Windows FS is case-insensitive — track lowercased names */
+function pickUniqueKyrunFilename(base, reservedLowercaseSet) {
+  const safe = sanitizeMacroFilenameBase(base);
+  let candidate = `${safe}.kyrun`;
+  let n = 0;
+  while (reservedLowercaseSet.has(candidate.toLowerCase())) {
+    n++;
+    candidate = `${safe} (${n}).kyrun`;
+  }
+  reservedLowercaseSet.add(candidate.toLowerCase());
+  return candidate;
+}
+
 /** Stable bind label for global shortcuts (Electron); avoids deprecated keyCode mismatches. */
 function keyEventToBindLabel(e) {
   const code = e.code || '';
@@ -146,7 +180,7 @@ function renderFileTree(items, container=null, depth=0) {
 // ── Macro Open/Save ──────────────────────────────────────────
 async function openMacro(item) {
   $$('.file-tree__item--active').forEach(e=>e.classList.remove('file-tree__item--active'));
-  const el = $(`.file-tree__item[data-path="${item.path}"]`);
+  const el = findFileTreeItemByPath(item.path);
   if (el) el.classList.add('file-tree__item--active');
   let data;
   try {
@@ -750,6 +784,11 @@ async function importMacros() {
     const files = await window.kyrun.importFileDialog();
     if (!files || !files.length) return;
     let lastImported = null;
+    let macros;
+    try { macros = await window.kyrun.getProfileMacros(state.currentProfile); }
+    catch { macros = []; }
+    const reserved = new Set(collectMacroRelPaths(macros).map(p => p.toLowerCase()));
+
     for (const f of files) {
       let data = null;
       const isAmcKrm = f.name.endsWith('.amc') || f.name.endsWith('.krm');
@@ -763,8 +802,9 @@ async function importMacros() {
       }
 
       if (data && data.commands && data.commands.length > 0) {
-        const macroName = data.name || f.name.replace(/\.\w+$/,'') || 'Imported';
-        const destName = macroName + '.kyrun';
+        const baseName = data.name || f.name.replace(/\.\w+$/,'') || 'Imported';
+        const destName = pickUniqueKyrunFilename(baseName, reserved);
+        const macroName = destName.replace(/\.kyrun$/i, '');
         const macroData = { name: macroName, version:'1.0', commands: data.commands, settings: data.settings||{} };
         await window.kyrun.saveMacroFile(destName, JSON.stringify(macroData, null, 2));
         lastImported = { name: macroName, path: destName, type: 'macro' };
@@ -1212,7 +1252,7 @@ $('.titlebar__menu-item[data-action="settings"]').onclick = () => {
 
 // Help
 $('.titlebar__menu-item[data-action="help"]').onclick = ()=>{
-  showModal('About Kyrun',`<div style="text-align:center"><div style="width:60px;height:60px;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:var(--bg-primary);margin-bottom:12px">K</div><h3 style="margin-bottom:4px">Kyrun v1.0</h3><p style="color:var(--text-tertiary);font-size:12px;margin-bottom:12px">Advanced Macro Editor & Executor</p><p style="color:var(--text-secondary);font-size:12px;line-height:1.6">Keyran-compatible macro application with<br>full .amc file support, recording, execution,<br>profile management, and anonymous mode.</p></div>`,[{label:'Close',type:'secondary',action:()=>{}}]);
+  showModal('About Kyrun',`<div style="text-align:center"><div style="width:60px;height:60px;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:var(--bg-primary);margin-bottom:12px">K</div><h3 style="margin-bottom:4px">Kyrun v1.0</h3><p style="color:var(--text-tertiary);font-size:12px;margin-bottom:12px">Advanced Macro Editor & Executor</p><p style="color:var(--text-secondary);font-size:12px;line-height:1.6">Keyran-compatible macro application with<br>full .amc file support, recording, execution,<br>profile management, and anonymous mode.</p><p style="color:var(--text-secondary);font-size:11px;line-height:1.5;margin-top:14px;text-align:left;max-width:340px;margin-left:auto;margin-right:auto">Games with strong anti-cheat (e.g. Marvel Rivals / NetEase ACE, Easy Anti-Cheat) often block <strong>software</strong> keyboard and mouse from other apps. Tools like Keyran may use a <strong>kernel driver</strong> or mouse firmware, which this app does not ship. Kyrun uses Windows <code>SendInput</code> (standard user-mode injection). Try running Kyrun <strong>as Administrator</strong> if the game runs elevated; if input still does nothing in-game, only hardware-level solutions or the game’s own settings may work. Always follow each game’s terms of service.</p></div>`,[{label:'Close',type:'secondary',action:()=>{}}]);
 };
 
 // Global shortcuts
