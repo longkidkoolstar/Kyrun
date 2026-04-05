@@ -540,6 +540,22 @@ function setupIPC() {
     const holdActive = !!(settings.triggerFromBind && settings.holdWhilePressed && settings.bindVk > 0);
     const ignoreGoWhile = holdActive;
     const releaseVk = holdActive ? settings.bindVk : 0;
+    const heldKeys = new Set();
+    const heldMouse = new Set();
+
+    function releaseTrackedHoldInputs() {
+      if (!holdActive || !input) return;
+      const keys = [...heldKeys];
+      const mice = [...heldMouse];
+      heldKeys.clear();
+      heldMouse.clear();
+      for (const vk of keys) {
+        try { input.keyUp(vk); } catch (_) {}
+      }
+      for (const b of mice) {
+        try { input.mouseUp(b); } catch (_) {}
+      }
+    }
 
     function jitter(ms) {
       if (!randomize) return Math.round(ms / speed);
@@ -568,18 +584,54 @@ function setupIPC() {
         mainWindow.webContents.send('macro-line', i);
         try {
           switch (cmd.type) {
-            case 'KeyDown': input.keyDown(cmd.keyCode); break;
-            case 'KeyUp': input.keyUp(cmd.keyCode); break;
-            case 'LeftDown': input.mouseDown('left'); break;
-            case 'LeftUp': input.mouseUp('left'); break;
-            case 'RightDown': input.mouseDown('right'); break;
-            case 'RightUp': input.mouseUp('right'); break;
-            case 'MiddleDown': input.mouseDown('middle'); break;
-            case 'MiddleUp': input.mouseUp('middle'); break;
-            case 'XButton1Down': input.mouseDown('x1'); break;
-            case 'XButton1Up': input.mouseUp('x1'); break;
-            case 'XButton2Down': input.mouseDown('x2'); break;
-            case 'XButton2Up': input.mouseUp('x2'); break;
+            case 'KeyDown':
+              input.keyDown(cmd.keyCode);
+              if (holdActive) heldKeys.add(cmd.keyCode);
+              break;
+            case 'KeyUp':
+              input.keyUp(cmd.keyCode);
+              if (holdActive) heldKeys.delete(cmd.keyCode);
+              break;
+            case 'LeftDown':
+              input.mouseDown('left');
+              if (holdActive) heldMouse.add('left');
+              break;
+            case 'LeftUp':
+              input.mouseUp('left');
+              if (holdActive) heldMouse.delete('left');
+              break;
+            case 'RightDown':
+              input.mouseDown('right');
+              if (holdActive) heldMouse.add('right');
+              break;
+            case 'RightUp':
+              input.mouseUp('right');
+              if (holdActive) heldMouse.delete('right');
+              break;
+            case 'MiddleDown':
+              input.mouseDown('middle');
+              if (holdActive) heldMouse.add('middle');
+              break;
+            case 'MiddleUp':
+              input.mouseUp('middle');
+              if (holdActive) heldMouse.delete('middle');
+              break;
+            case 'XButton1Down':
+              input.mouseDown('x1');
+              if (holdActive) heldMouse.add('x1');
+              break;
+            case 'XButton1Up':
+              input.mouseUp('x1');
+              if (holdActive) heldMouse.delete('x1');
+              break;
+            case 'XButton2Down':
+              input.mouseDown('x2');
+              if (holdActive) heldMouse.add('x2');
+              break;
+            case 'XButton2Up':
+              input.mouseUp('x2');
+              if (holdActive) heldMouse.delete('x2');
+              break;
             case 'ScrollUp': input.scroll(cmd.value || 3); break;
             case 'ScrollDown': input.scroll(-(cmd.value || 3)); break;
             case 'Delay': await sleep(jitter(cmd.value)); break;
@@ -623,6 +675,9 @@ function setupIPC() {
         await runOnce(commands);
       }
     } catch(e) { /* macro error */ }
+    finally {
+      if (holdActive) releaseTrackedHoldInputs();
+    }
 
     macroRunning = false;
     macroAbort = false;
