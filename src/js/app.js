@@ -25,6 +25,9 @@ const KEY_CODE_MAP = {
   219:'[',220:'\\',221:']',222:"'"
 };
 
+// Incremented on each openMacro so stale async reads cannot overwrite the editor.
+let openMacroGeneration = 0;
+
 // ── State ────────────────────────────────────────────────────
 const state = {
   currentProfile: 'Default',
@@ -179,15 +182,20 @@ function renderFileTree(items, container=null, depth=0) {
 
 // ── Macro Open/Save ──────────────────────────────────────────
 async function openMacro(item) {
+  const gen = ++openMacroGeneration;
   $$('.file-tree__item--active').forEach(e=>e.classList.remove('file-tree__item--active'));
   const el = findFileTreeItemByPath(item.path);
   if (el) el.classList.add('file-tree__item--active');
   let data;
   try {
     const raw = await window.kyrun.readMacroFile(item.path);
+    if (gen !== openMacroGeneration) return;
     data = raw ? JSON.parse(raw) : null;
     if (!data) data = { name: item.name, commands: [], settings: {} };
-  } catch { data = { name: item.name, commands: [], settings: {} }; }
+  } catch {
+    if (gen !== openMacroGeneration) return;
+    data = { name: item.name, commands: [], settings: {} };
+  }
   state.currentMacro = { name: data.name||item.name, path: item.path, dirty: false };
   state.commands = data.commands || [];
   state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, ...data.settings };
@@ -202,15 +210,24 @@ async function openMacro(item) {
   renderCommands(); updateStatusBar();
 }
 
+// After capturing a new trigger key, registering globalShortcut immediately can fire the same keypress — defer reload + ignore IPC briefly.
+let suppressHotkeyTriggersUntil = 0;
+function scheduleReloadProfileTriggers(delayMs = 400) {
+  suppressHotkeyTriggersUntil = Date.now() + delayMs + 350;
+  setTimeout(() => { void reloadProfileTriggers(); }, delayMs);
+}
+
 async function saveMacro(opts = {}) {
   const silent = opts.silent === true;
+  const deferTriggers = opts.deferTriggers === true;
   if (!state.currentMacro) return;
   const data = { name:state.currentMacro.name, version:'1.0', commands:state.commands, settings:state.macroSettings };
   try {
     await window.kyrun.saveMacroFile(state.currentMacro.path, JSON.stringify(data,null,2));
     state.currentMacro.dirty=false;
     if (!silent) showToast('Macro saved','success');
-    await reloadProfileTriggers(); // Re-apply binds!
+    if (deferTriggers) scheduleReloadProfileTriggers(400);
+    else await reloadProfileTriggers(); // Re-apply binds!
   }
   catch { if (!silent) showToast('Save failed','error'); }
   updateStatusBar();
@@ -218,9 +235,22 @@ async function saveMacro(opts = {}) {
 
 // ── Command Rendering ────────────────────────────────────────
 function renderCommands() {
-  const body = $('#command-list-body'), empty = $('#command-empty');
-  if (state.commands.length === 0) { body.innerHTML=''; body.appendChild(empty); empty.classList.remove('hidden'); updateStatusBar(); return; }
-  empty.classList.add('hidden'); body.innerHTML='';
+  const body = $('#command-list-body');
+  body.querySelectorAll('.command-row').forEach(r => r.remove());
+  let empty = $('#command-empty');
+  if (state.commands.length === 0) {
+    if (!empty) {
+      empty = document.createElement('div');
+      empty.id = 'command-empty';
+      empty.className = 'command-list__empty';
+      empty.innerHTML = '<div class="command-list__empty-icon">📝</div><div class="command-list__empty-text">No commands yet</div><div class="command-list__empty-hint">Click "Record" or add commands from the panel on the right</div>';
+      body.appendChild(empty);
+    }
+    empty.classList.remove('hidden');
+    updateStatusBar();
+    return;
+  }
+  if (empty) empty.classList.add('hidden');
   state.commands.forEach((cmd, i) => {
     const row = document.createElement('div');
     row.className = 'command-row';
@@ -781,6 +811,7 @@ function exportToAhk(commands, hotkey='F1', speed=1.0) {
 // ── Import Handler ───────────────────────────────────────────
 async function importMacros() {
   try {
+    try { await window.kyrun.switchProfile(state.currentProfile); } catch {}
     const files = await window.kyrun.importFileDialog();
     if (!files || !files.length) return;
     let lastImported = null;
@@ -917,6 +948,7 @@ try {
   
   // Background macro execution from globally bound triggers
   window.kyrun.onHotkeyTriggered(async (macroPath) => {
+    if (Date.now() < suppressHotkeyTriggersUntil) return;
     // Check if it's a profile switch trigger
     if (macroPath.startsWith('!profile:')) {
       const pName = macroPath.replace('!profile:', '');
@@ -1061,14 +1093,20 @@ $('#modal-close').onclick = hideModal;
 $('#modal-overlay').onclick = e=>{ if(e.target===e.currentTarget) hideModal(); };
 
 $('#profile-dropdown').onchange = async e => {
-  state.currentProfile=e.target.value;
-  try{await window.kyrun.switchProfile(state.currentProfile);}catch{}
+  const name = e.target.value;
+  try {
+    await window.kyrun.switchProfile(name);
+    state.currentProfile = name;
+  } catch {
+    e.target.value = state.currentProfile;
+    return;
+  }
   loadFileTree(); state.currentMacro=null; state.commands=[];
   $('#editor-content').classList.add('hidden'); $('#welcome-view').classList.remove('hidden');
   updateStatusBar();
 };
 
-$('#btn-add-profile').onclick = ()=>showModal('New Profile','<input type="text" class="properties-panel__input" id="new-profile-name" placeholder="Profile name...">',[{label:'Cancel',type:'secondary',action:()=>{}},{label:'Create',type:'primary',action:async()=>{const n=document.getElementById('new-profile-name').value.trim();if(!n)return;try{await window.kyrun.createProfile(n);}catch{}state.currentProfile=n;loadProfiles();loadFileTree();showToast(`Profile "${n}" created`,'success');}}]);
+$('#btn-add-profile').onclick = ()=>showModal('New Profile','<input type="text" class="properties-panel__input" id="new-profile-name" placeholder="Profile name...">',[{label:'Cancel',type:'secondary',action:()=>{}},{label:'Create',type:'primary',action:async()=>{const n=document.getElementById('new-profile-name').value.trim();if(!n)return;try{await window.kyrun.createProfile(n);await window.kyrun.switchProfile(n);}catch{showToast('Could not create or switch profile','error');return;}showToast(`Profile "${n}" created`,'success');}}]);
 
 $('#btn-rename-profile').onclick = ()=>{
   if(state.currentProfile==='Default'){showToast('Cannot rename Default','error');return;}
@@ -1136,7 +1174,7 @@ $('#bind-key-input').onclick = function() {
     state.macroSettings.bindIsMouse = false;
     if (state.currentMacro) state.currentMacro.dirty = true;
     cleanup();
-    if (state.currentMacro) saveMacro({ silent: true });
+    if (state.currentMacro) saveMacro({ silent: true, deferTriggers: true });
   };
   const mouseH = e => {
     if (e.button === 0) return; // ignore left click (that's what opened this)
@@ -1150,7 +1188,7 @@ $('#bind-key-input').onclick = function() {
     state.macroSettings.bindIsMouse = true;
     if (state.currentMacro) state.currentMacro.dirty = true;
     cleanup();
-    if (state.currentMacro) saveMacro({ silent: true });
+    if (state.currentMacro) saveMacro({ silent: true, deferTriggers: true });
   };
   function cleanup() {
     document.removeEventListener('keydown', keyH);
@@ -1188,6 +1226,7 @@ async function renderProfileHotkeys() {
           </div>
           <input type="text" class="properties-panel__input" style="width:140px;cursor:pointer;" 
             placeholder="Click to bind..." 
+            title="Left-click to bind · Right-click to unbind"
             value="${currentBind}" 
             data-profile="${p}" readonly>
         </div>
@@ -1197,6 +1236,17 @@ async function renderProfileHotkeys() {
     
     // Bind click events
     container.querySelectorAll('input').forEach(input => {
+      input.oncontextmenu = async e => {
+        e.preventDefault();
+        const profile = input.dataset.profile;
+        settings.profileHotkeys = settings.profileHotkeys || {};
+        if (!settings.profileHotkeys[profile]) return;
+        delete settings.profileHotkeys[profile];
+        input.value = '';
+        await window.kyrun.saveSettings(settings);
+        scheduleReloadProfileTriggers(400);
+        showToast(`Unbound ${profile}`, 'info');
+      };
       input.onclick = function() {
         this.value = 'Press key/mouse...';
         const profile = this.dataset.profile;
@@ -1225,7 +1275,7 @@ async function renderProfileHotkeys() {
           settings.profileHotkeys = settings.profileHotkeys || {};
           settings.profileHotkeys[prof] = n;
           await window.kyrun.saveSettings(settings);
-          reloadProfileTriggers();
+          scheduleReloadProfileTriggers(400);
           showToast(`Bound ${n} to ${prof}`, 'success');
         }
         document.addEventListener('keydown', keyH);
@@ -1275,6 +1325,10 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
 
 // ── Init ─────────────────────────────────────────────────────
 (async function init() {
+  try {
+    const cp = await window.kyrun.getCurrentProfile();
+    if (cp) state.currentProfile = cp;
+  } catch {}
   loadProfiles(); loadFileTree();
   // We cannot reload triggers simultaneously because it reads the same macro files we just grabbed
   setTimeout(reloadProfileTriggers, 500); 
