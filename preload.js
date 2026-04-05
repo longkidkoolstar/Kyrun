@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('kyrun', {
   // ── Settings ───────────────────────────────
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  getMacroTriggersState: () => ipcRenderer.invoke('get-macro-triggers-state'),
+  setMacroTriggersArmed: (armed) => ipcRenderer.invoke('set-macro-triggers-armed', armed),
 
   // ── Profiles ───────────────────────────────
   getProfiles: () => ipcRenderer.invoke('get-profiles'),
@@ -54,6 +56,7 @@ contextBridge.exposeInMainWorld('kyrun', {
   onProfileChanged: (cb) => ipcRenderer.on('profile-changed', (_, name) => cb(name)),
   onAnonymousModeChanged: (cb) => ipcRenderer.on('anonymous-mode-changed', (_, status) => cb(status)),
   onHotkeyTriggered: (cb) => ipcRenderer.on('hotkey-triggered', (_, id) => cb(id)),
+  onMacroTriggersState: (cb) => ipcRenderer.on('macro-triggers-state', (_, data) => cb(data)),
   onMacroState: (cb) => ipcRenderer.on('macro-state', (_, data) => cb(data)),
   onMacroLine: (cb) => ipcRenderer.on('macro-line', (_, line) => cb(line)),
 

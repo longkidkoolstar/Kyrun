@@ -40,18 +40,26 @@ const state = {
   isRecording: false,
   isRunning: false,
   isAnonymous: false,
-  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false },
+  streamerMode: false,
+  cachedPidText: '',
+  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false, holdWhilePressed: false },
   speedMultiplier: 1.0,
   currentView: 'editor',
   hasRobot: false,
   recordLastTime: 0,
-  dragIndex: -1
+  dragIndex: -1,
+  /** armed — global macro hotkeys only; profile-switch binds stay active when false */
+  macroTriggers: { armed: false }
 };
 
 // ── Helpers ──────────────────────────────────────────────────
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const getKeyName = c => KEY_CODE_MAP[c] || `Key${c}`;
+
+function privacyActive() {
+  return !!(state.streamerMode || state.isAnonymous);
+}
 
 /** querySelector('[data-path="..."]') breaks on paths with () or other special chars — compare in JS instead */
 function findFileTreeItemByPath(relPath) {
@@ -148,7 +156,7 @@ async function loadProfiles() {
       dd.appendChild(o);
     });
   } catch {}
-  $('#statusbar-profile').textContent = state.currentProfile;
+  updateStatusBar();
 }
 
 async function loadFileTree() {
@@ -198,7 +206,7 @@ async function openMacro(item) {
   }
   state.currentMacro = { name: data.name||item.name, path: item.path, dirty: false };
   state.commands = data.commands || [];
-  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, ...data.settings };
+  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, holdWhilePressed:false, ...data.settings };
   state.selectedIndices.clear(); state.undoStack=[]; state.redoStack=[];
   $('#welcome-view').classList.add('hidden');
   $('#settings-view').classList.remove('settings-view--visible');
@@ -217,10 +225,26 @@ function scheduleReloadProfileTriggers(delayMs = 400) {
   setTimeout(() => { void reloadProfileTriggers(); }, delayMs);
 }
 
+/** Sync checkbox/number inputs into state so Save persists what the UI shows (fixes loop/hold not saving). */
+function commitMacroSettingsFromUI() {
+  const loopEl = $('#loop-enabled');
+  const lc = $('#loop-count');
+  const rd = $('#random-delays');
+  const hw = $('#hold-while-pressed');
+  if (loopEl) state.macroSettings.loop = !!loopEl.checked;
+  if (lc) {
+    const v = parseInt(lc.value, 10);
+    state.macroSettings.loopCount = Number.isFinite(v) && v >= 0 ? v : 0;
+  }
+  if (rd) state.macroSettings.randomDelays = !!rd.checked;
+  if (hw) state.macroSettings.holdWhilePressed = !!hw.checked;
+}
+
 async function saveMacro(opts = {}) {
   const silent = opts.silent === true;
   const deferTriggers = opts.deferTriggers === true;
   if (!state.currentMacro) return;
+  commitMacroSettingsFromUI();
   const data = { name:state.currentMacro.name, version:'1.0', commands:state.commands, settings:state.macroSettings };
   try {
     await window.kyrun.saveMacroFile(state.currentMacro.path, JSON.stringify(data,null,2));
@@ -531,7 +555,7 @@ async function runMacro() {
   state.isRunning = true;
   updateRunningUI(true);
   try {
-    const settings = { ...state.macroSettings, speedMultiplier: state.speedMultiplier };
+    const settings = { ...state.macroSettings, speedMultiplier: state.speedMultiplier, triggerFromBind: false };
     const result = await window.kyrun.executeMacro(state.commands, settings);
     if (!result.success) showToast(result.error||'Execution failed','error');
   } catch(e) { showToast('Input module not available','error'); }
@@ -894,14 +918,69 @@ function updateMacroSettings() {
   $('#loop-enabled').checked = state.macroSettings.loop;
   $('#loop-count').value = state.macroSettings.loopCount||0;
   $('#loop-count-field').style.display = state.macroSettings.loop?'block':'none';
+  const hw = $('#hold-while-pressed');
+  if (hw) hw.checked = !!state.macroSettings.holdWhilePressed;
   $('#random-delays').checked = state.macroSettings.randomDelays;
   $('#bind-key-input').value = state.macroSettings.bindKey||'';
 }
+function syncAnonymousButtonUI() {
+  const btn = $('#btn-anonymous');
+  const anon = $('#anonymous-text');
+  if (!btn || !anon) return;
+  btn.className = `statusbar__anonymous statusbar__anonymous--${state.isAnonymous ? 'on' : 'off'}`;
+  if (state.streamerMode) {
+    anon.textContent = '';
+    btn.title = state.isAnonymous ? 'Privacy: anonymous on' : 'Privacy: anonymous off';
+  } else {
+    anon.textContent = `Anonymous: ${state.isAnonymous ? 'ON' : 'OFF'}`;
+    btn.title = 'Toggle Anonymous Mode';
+  }
+}
+
+function updateTitlebarBrand() {
+  const privacy = privacyActive();
+  const logoIcon = $('#titlebar-logo-icon');
+  const titleText = $('#titlebar-title-text');
+  if (logoIcon) logoIcon.textContent = privacy ? '•' : 'K';
+  if (titleText) titleText.textContent = privacy ? 'APP' : 'KYRUN';
+  document.title = privacy ? 'App' : 'Kyrun';
+}
+
 function updateStatusBar() {
-  $('#statusbar-profile').textContent = state.currentProfile;
-  const mn=$('#statusbar-macro-name span');
-  mn.textContent = state.currentMacro ? `${state.currentMacro.name}${state.currentMacro.dirty?' •':''}` : 'No macro open';
   $('#statusbar-commands span').textContent = `${state.commands.length} commands`;
+  if (privacyActive()) {
+    $('#statusbar-profile').textContent = '—';
+    $('#statusbar-pid').textContent = '';
+    const mn = $('#statusbar-macro-name span');
+    mn.textContent = state.currentMacro
+      ? (state.currentMacro.dirty ? 'Macro open •' : 'Macro open')
+      : 'No macro open';
+  } else {
+    $('#statusbar-profile').textContent = state.currentProfile;
+    const mn = $('#statusbar-macro-name span');
+    mn.textContent = state.currentMacro ? `${state.currentMacro.name}${state.currentMacro.dirty ? ' •' : ''}` : 'No macro open';
+    $('#statusbar-pid').textContent = state.cachedPidText || '';
+  }
+  updateTitlebarBrand();
+  syncAnonymousButtonUI();
+  updateTriggersTitlebar();
+}
+
+function updateTriggersTitlebar() {
+  const dot = $('#triggers-dot');
+  const text = $('#triggers-status-text');
+  const row = $('#status-triggers');
+  if (!dot || !text) return;
+  const armed = state.macroTriggers.armed;
+  if (armed) {
+    dot.className = 'titlebar__status-dot titlebar__status-dot--active';
+    text.textContent = privacyActive() ? 'On' : 'Macros: On';
+    if (row) row.title = 'Global macro hotkeys are active. Profile switch keys also work.';
+  } else {
+    dot.className = 'titlebar__status-dot titlebar__status-dot--inactive';
+    text.textContent = privacyActive() ? 'Off' : 'Macros: Off';
+    if (row) row.title = 'Macro hotkeys are paused. Profile switch keys (Settings) still work.';
+  }
 }
 function updateKeyboardViz() {
   $$('.keyboard-viz__key').forEach(k=>k.classList.remove('keyboard-viz__key--active'));
@@ -944,7 +1023,12 @@ try {
     const row=$(`.command-row[data-index="${line}"]`);
     if(row) row.classList.add('command-row--executing');
   });
-  window.kyrun.onProfileChanged(name => { state.currentProfile=name; loadProfiles(); loadFileTree(); reloadProfileTriggers(); });
+  window.kyrun.onProfileChanged(name => { state.currentProfile=name; loadProfiles(); loadFileTree(); reloadProfileTriggers(); updateStatusBar(); });
+  window.kyrun.onAnonymousModeChanged(isAnon => { state.isAnonymous = !!isAnon; updateStatusBar(); });
+  window.kyrun.onMacroTriggersState(data => {
+    state.macroTriggers = { armed: !!data.armed };
+    updateTriggersTitlebar();
+  });
   
   // Background macro execution from globally bound triggers
   window.kyrun.onHotkeyTriggered(async (macroPath) => {
@@ -958,7 +1042,7 @@ try {
         loadProfiles(); loadFileTree(); reloadProfileTriggers();
         $('#editor-content').classList.add('hidden'); $('#welcome-view').classList.remove('hidden');
         updateStatusBar();
-        showToast(`Profile switched: ${pName}`, 'info');
+        showToast(privacyActive() ? 'Profile switched' : `Profile switched: ${pName}`, 'info');
       }
       return;
     }
@@ -972,7 +1056,7 @@ try {
       
       state.isRunning = true;
       updateRunningUI(true);
-      const settings = { ...data.settings, speedMultiplier: state.speedMultiplier };
+      const settings = { ...data.settings, speedMultiplier: state.speedMultiplier, triggerFromBind: true };
       const result = await window.kyrun.executeMacro(data.commands, settings);
       if (!result.success && result.error !== 'Macro already running') {
         showToast(result.error||'Execution failed', 'error');
@@ -1038,7 +1122,7 @@ async function reloadProfileTriggers() {
     await scanTree(macros);
   } catch {}
   
-  // Register Profile Hotkeys
+  // Register Profile Hotkeys (keyboard via globalShortcut, mouse via low-level polling — both work unfocused)
   try {
     const settings = await window.kyrun.getSettings();
     if (settings && settings.profileHotkeys) {
@@ -1048,14 +1132,28 @@ async function reloadProfileTriggers() {
         if (electronAc) {
           await window.kyrun.registerHotkey(`!profile:${pName}`, electronAc);
           activeTriggers.push({path: `!profile:${pName}`, isMouse: false, bindKey});
-        } else if (bindKey.startsWith('Mouse')) {
-          // Future: map back to vk code, but for now electronAc works for F-keys and Alt+etc.
-          // Note: Full mouse button support for profile switching requires VK mapping.
+        } else {
+          const vk = profileMouseBindToVk(bindKey);
+          if (vk) {
+            const ok = await window.kyrun.registerMouseTrigger(`!profile:${pName}`, vk);
+            if (ok) activeTriggers.push({path: `!profile:${pName}`, isMouse: true, vk});
+            else if (!firstHotkeyError) firstHotkeyError = `Mouse profile hotkey needs native input (profile "${pName}").`;
+          }
         }
       }
     }
   } catch {}
   if (firstHotkeyError) showToast(firstHotkeyError, 'error');
+}
+
+function profileMouseBindToVk(bindKey) {
+  const map = {
+    'Middle Mouse': 4,
+    'Right Mouse': 2,
+    'Mouse X1 (Side)': 5,
+    'Mouse X2 (Side)': 6
+  };
+  return map[bindKey] || null;
 }
 
 function convertToElectronAccelerator(keyname) {
@@ -1159,9 +1257,12 @@ $('#editor-content').addEventListener('click', e => {
 });
 
 // Macro settings
-$('#loop-enabled').onchange = e=>{ state.macroSettings.loop=e.target.checked; $('#loop-count-field').style.display=e.target.checked?'block':'none'; if(state.currentMacro)state.currentMacro.dirty=true; };
-$('#loop-count').onchange = e=>{ state.macroSettings.loopCount=parseInt(e.target.value); };
-$('#random-delays').onchange = e=>{ state.macroSettings.randomDelays=e.target.checked; };
+$('#loop-enabled').onchange = e=>{ state.macroSettings.loop=e.target.checked; $('#loop-count-field').style.display=e.target.checked?'block':'none'; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+$('#loop-count').oninput = e=>{ const v=parseInt(e.target.value,10); state.macroSettings.loopCount=Number.isFinite(v)&&v>=0?v:0; if(state.currentMacro)state.currentMacro.dirty=true; };
+$('#loop-count').onchange = e=>{ const v=parseInt(e.target.value,10); state.macroSettings.loopCount=Number.isFinite(v)&&v>=0?v:0; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+const holdWhileEl = $('#hold-while-pressed');
+if (holdWhileEl) holdWhileEl.onchange = e=>{ state.macroSettings.holdWhilePressed=e.target.checked; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+$('#random-delays').onchange = e=>{ state.macroSettings.randomDelays=e.target.checked; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
 $('#bind-key-input').onclick = function() {
   this.value = 'Press a key or mouse button...';
   const self = this;
@@ -1200,10 +1301,10 @@ $('#bind-key-input').onclick = function() {
 
 // Anonymous
 $('#btn-anonymous').onclick = async()=>{
-  try{state.isAnonymous=await window.kyrun.toggleAnonymous();}catch{state.isAnonymous=!state.isAnonymous;}
-  $('#btn-anonymous').className=`statusbar__anonymous statusbar__anonymous--${state.isAnonymous?'on':'off'}`;
-  $('#anonymous-text').textContent=`Anonymous: ${state.isAnonymous?'ON':'OFF'}`;
-  showToast(`Anonymous ${state.isAnonymous?'enabled':'disabled'}`,state.isAnonymous?'success':'info');
+  try { state.isAnonymous = await window.kyrun.toggleAnonymous(); }
+  catch { state.isAnonymous = !state.isAnonymous; }
+  updateStatusBar();
+  showToast(`Anonymous ${state.isAnonymous ? 'enabled' : 'disabled'}`, state.isAnonymous ? 'success' : 'info');
 };
 
 // ── Settings UI ──────────────────────────────────────────────
@@ -1285,24 +1386,100 @@ async function renderProfileHotkeys() {
   } catch {}
 }
 
-$('.titlebar__menu-item[data-action="settings"]').onclick = () => {
-  if(state.currentView==='settings') {
+async function loadSettingsToForm() {
+  try {
+    const s = await window.kyrun.getSettings();
+    const mt = $('#setting-minimize-tray');
+    const sm = $('#setting-start-minimized');
+    const st = $('#setting-streamer-mode');
+    const ao = $('#setting-anonymous-startup');
+    const rt = $('#setting-random-timing');
+    const dd = $('#setting-default-delay');
+    const cm = $('#setting-coord-mode');
+    if (mt) mt.checked = s.minimizeToTray !== false;
+    if (sm) sm.checked = !!s.startMinimized;
+    if (st) st.checked = !!s.streamerMode;
+    if (ao) ao.checked = !!s.anonymousOnStartup;
+    if (rt) rt.checked = s.randomTiming !== false;
+    if (dd) dd.value = s.defaultDelay != null ? s.defaultDelay : 50;
+    if (cm) cm.value = s.coordinateMode || 'absolute';
+  } catch {}
+}
+
+function wireSettingsControls() {
+  const onToggle = async (sel, key, after) => {
+    const el = $(sel);
+    if (!el) return;
+    el.addEventListener('change', async () => {
+      try {
+        const settings = await window.kyrun.getSettings();
+        settings[key] = el.checked;
+        await window.kyrun.saveSettings(settings);
+        if (key === 'streamerMode') {
+          state.streamerMode = el.checked;
+          updateStatusBar();
+        }
+        if (after) after();
+      } catch {}
+    });
+  };
+  onToggle('#setting-minimize-tray', 'minimizeToTray');
+  onToggle('#setting-start-minimized', 'startMinimized');
+  onToggle('#setting-streamer-mode', 'streamerMode');
+  onToggle('#setting-anonymous-startup', 'anonymousOnStartup');
+  onToggle('#setting-random-timing', 'randomTiming');
+
+  const dd = $('#setting-default-delay');
+  if (dd) {
+    dd.addEventListener('change', async () => {
+      try {
+        const settings = await window.kyrun.getSettings();
+        settings.defaultDelay = Math.max(1, parseInt(dd.value, 10) || 50);
+        await window.kyrun.saveSettings(settings);
+      } catch {}
+    });
+  }
+  const cm = $('#setting-coord-mode');
+  if (cm) {
+    cm.addEventListener('change', async () => {
+      try {
+        const settings = await window.kyrun.getSettings();
+        settings.coordinateMode = cm.value;
+        await window.kyrun.saveSettings(settings);
+      } catch {}
+    });
+  }
+}
+
+$('.titlebar__menu-item[data-action="settings"]').onclick = async () => {
+  if (state.currentView === 'settings') {
     $('#settings-view').classList.remove('settings-view--visible');
-    if(state.currentMacro)$('#editor-content').classList.remove('hidden');
+    if (state.currentMacro) $('#editor-content').classList.remove('hidden');
     else $('#welcome-view').classList.remove('hidden');
-    state.currentView='editor';
+    state.currentView = 'editor';
   } else {
+    await loadSettingsToForm();
     $('#settings-view').classList.add('settings-view--visible');
     $('#editor-content').classList.add('hidden');
     $('#welcome-view').classList.add('hidden');
-    state.currentView='settings';
+    state.currentView = 'settings';
     renderProfileHotkeys();
   }
 };
 
 // Help
 $('.titlebar__menu-item[data-action="help"]').onclick = ()=>{
-  showModal('About Kyrun',`<div style="text-align:center"><div style="width:60px;height:60px;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:var(--bg-primary);margin-bottom:12px">K</div><h3 style="margin-bottom:4px">Kyrun v1.0</h3><p style="color:var(--text-tertiary);font-size:12px;margin-bottom:12px">Advanced Macro Editor & Executor</p><p style="color:var(--text-secondary);font-size:12px;line-height:1.6">Keyran-compatible macro application with<br>full .amc file support, recording, execution,<br>profile management, and anonymous mode.</p><p style="color:var(--text-secondary);font-size:11px;line-height:1.5;margin-top:14px;text-align:left;max-width:340px;margin-left:auto;margin-right:auto">Games with strong anti-cheat (e.g. Marvel Rivals / NetEase ACE, Easy Anti-Cheat) often block <strong>software</strong> keyboard and mouse from other apps. Tools like Keyran may use a <strong>kernel driver</strong> or mouse firmware, which this app does not ship. Kyrun uses Windows <code>SendInput</code> (standard user-mode injection). Try running Kyrun <strong>as Administrator</strong> if the game runs elevated; if input still does nothing in-game, only hardware-level solutions or the game’s own settings may work. Always follow each game’s terms of service.</p></div>`,[{label:'Close',type:'secondary',action:()=>{}}]);
+  const privacy = privacyActive();
+  const brand = privacy ? 'App' : 'Kyrun';
+  const icon = privacy ? '•' : 'K';
+  const tag = privacy ? 'Macro editor' : 'Advanced Macro Editor & Executor';
+  const bodyIntro = privacy
+    ? 'Macro editor with recording, profiles, and privacy-friendly display options.'
+    : 'Keyran-compatible macro application with<br>full .amc file support, recording, execution,<br>profile management, and anonymous mode.';
+  const foot = privacy
+    ? 'Uses Windows <code>SendInput</code> for input. Follow each game’s terms of service.'
+    : 'Games with strong anti-cheat (e.g. Marvel Rivals / NetEase ACE, Easy Anti-Cheat) often block <strong>software</strong> keyboard and mouse from other apps. Tools like Keyran may use a <strong>kernel driver</strong> or mouse firmware, which this app does not ship. Kyrun uses Windows <code>SendInput</code> (standard user-mode injection). Try running Kyrun <strong>as Administrator</strong> if the game runs elevated; if input still does nothing in-game, only hardware-level solutions or the game’s own settings may work. Always follow each game’s terms of service.';
+  showModal(`About ${brand}`,`<div style="text-align:center"><div style="width:60px;height:60px;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:var(--bg-primary);margin-bottom:12px">${icon}</div><h3 style="margin-bottom:4px">${brand} v1.0</h3><p style="color:var(--text-tertiary);font-size:12px;margin-bottom:12px">${tag}</p><p style="color:var(--text-secondary);font-size:12px;line-height:1.6">${bodyIntro}</p><p style="color:var(--text-secondary);font-size:11px;line-height:1.5;margin-top:14px;text-align:left;max-width:340px;margin-left:auto;margin-right:auto">${foot}</p></div>`,[{label:'Close',type:'secondary',action:()=>{}}]);
 };
 
 // Global shortcuts
@@ -1331,12 +1508,34 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
   } catch {}
   loadProfiles(); loadFileTree();
   // We cannot reload triggers simultaneously because it reads the same macro files we just grabbed
-  setTimeout(reloadProfileTriggers, 500); 
+  setTimeout(reloadProfileTriggers, 500);
   try {
     const info = await window.kyrun.getAppInfo();
-    $('#statusbar-pid').textContent = `PID: ${info.pid}`;
+    state.cachedPidText = `PID: ${info.pid}`;
     state.hasRobot = info.hasInput;
     if (info.hasInput) { $('#driver-dot').className='titlebar__status-dot titlebar__status-dot--active'; }
-  } catch { $('#statusbar-pid').textContent='PID: demo'; }
+  } catch {
+    state.cachedPidText = 'PID: demo';
+  }
+  try {
+    state.isAnonymous = await window.kyrun.getAnonymousStatus();
+    const settings = await window.kyrun.getSettings();
+    state.streamerMode = !!settings.streamerMode;
+  } catch {}
+  try {
+    const ts = await window.kyrun.getMacroTriggersState();
+    state.macroTriggers = { armed: ts.armed };
+  } catch {}
+  wireSettingsControls();
   updateStatusBar();
+
+  const stEl = $('#status-triggers');
+  if (stEl) {
+    stEl.style.cursor = 'pointer';
+    stEl.addEventListener('click', async () => {
+      try {
+        await window.kyrun.setMacroTriggersArmed(!state.macroTriggers.armed);
+      } catch {}
+    });
+  }
 })();

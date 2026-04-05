@@ -10,9 +10,9 @@
   <div id="app">
     <!-- ═══ TITLEBAR ═══ -->
     <div class="titlebar">
-      <div class="titlebar__logo">
-        <div class="titlebar__logo-icon">K</div>
-        <span class="titlebar__title">KYRUN</span>
+      <div class="titlebar__logo" id="titlebar-brand">
+        <div class="titlebar__logo-icon" id="titlebar-logo-icon">K</div>
+        <span class="titlebar__title" id="titlebar-title-text">KYRUN</span>
       </div>
       <div class="titlebar__menu">
         <button class="titlebar__menu-item" data-action="import">File</button>
@@ -28,6 +28,10 @@
         <div class="titlebar__status-item" id="status-macro">
           <span class="titlebar__status-dot titlebar__status-dot--inactive" id="macro-dot"></span>
           <span id="macro-status-text">Stopped</span>
+        </div>
+        <div class="titlebar__status-item" id="status-triggers" title="Pause or resume global macro hotkeys. Profile switch keys (Settings) stay active when paused.">
+          <span class="titlebar__status-dot titlebar__status-dot--inactive" id="triggers-dot"></span>
+          <span id="triggers-status-text">Macros: Off</span>
         </div>
       </div>
       <div class="titlebar__controls">
@@ -168,6 +172,11 @@
                 <label class="properties-panel__label">Loop Count (0 = infinite)</label>
                 <input type="number" class="properties-panel__input" id="loop-count" value="0" min="0">
               </div>
+              <div class="properties-panel__checkbox-group">
+                <input type="checkbox" class="properties-panel__checkbox" id="hold-while-pressed">
+                <label class="properties-panel__checkbox-label" for="hold-while-pressed">Run while trigger held</label>
+              </div>
+              <p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:-4px 0 8px 0;line-height:1.35">Release to stop; repeats the full sequence while the bind stays down and skips Loop commands in the list. Only when started by the trigger bind, not Play.</p>
               <div class="properties-panel__checkbox-group">
                 <input type="checkbox" class="properties-panel__checkbox" id="random-delays">
                 <label class="properties-panel__checkbox-label" for="random-delays">Randomize delays (±20%)</label>
@@ -359,7 +368,7 @@
             <div class="settings-view__row">
               <div>
                 <div class="settings-view__row-label">Randomize input timing</div>
-                <div class="settings-view__row-desc">Add ±5-15ms random jitter to all inputs</div>
+                <div class="settings-view__row-desc">Apply ±20% random variance to delay timings (global default; macro can override)</div>
               </div>
               <label class="toggle-switch">
                 <input type="checkbox" id="setting-random-timing" checked>
@@ -403,8 +412,8 @@
     </div>
 
     <!-- ═══ STATUS BAR ═══ -->
-    <div class="statusbar">
-      <div class="statusbar__item">
+    <div class="statusbar" id="app-statusbar">
+      <div class="statusbar__item" id="statusbar-profile-wrap">
         <span>Profile:</span>
         <span id="statusbar-profile" style="color: var(--accent-primary);">Default</span>
       </div>

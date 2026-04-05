@@ -15,6 +15,8 @@ const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 let mainWindow = null;
 let tray = null;
 let isAnonymousMode = false;
+/** Window/tray title string while anonymous (matches fake process name). */
+let anonymousDisplayTitle = '';
 let currentProfile = 'Default';
 let appSettings = {};
 let registeredHotkeys = new Map();
@@ -22,6 +24,29 @@ let macroRunning = false;
 let macroAbort = false;
 let mouseTriggerInterval = null; // polling for mouse button triggers
 let mouseTriggerBindings = new Map(); // vkCode → macroId
+
+/** Global macro hotkeys only fire when true (toggle from titlebar or tray). Profile-switch binds still fire when false. */
+let macroTriggersArmed = false;
+
+function macroTriggersEffectivelyArmed() {
+  return macroTriggersArmed;
+}
+
+/** Profile-switch binds should work even when macro triggers are disarmed (Listening OFF). */
+function hotkeyAllowedWhenDisarmed(id) {
+  return typeof id === 'string' && id.startsWith('!profile:');
+}
+
+function shouldFireGlobalHotkey(id) {
+  return macroTriggersEffectivelyArmed() || hotkeyAllowedWhenDisarmed(id);
+}
+
+function sendMacroTriggersState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('macro-triggers-state', { armed: macroTriggersArmed });
+  }
+  if (tray) updateTrayMenu();
+}
 
 /** Keyran/Oscar .amc files are often UTF-16 LE; reading as UTF-8 breaks XML/Syntax parsing. */
 function readTextFileAutoEncoding(filePath) {
@@ -60,7 +85,8 @@ function ensureDirectories() {
         loop: false,
         loopCount: 1,
         bindKey: '',
-        windowBind: ''
+        windowBind: '',
+        holdWhilePressed: false
       }
     };
     fs.writeFileSync(
@@ -72,12 +98,13 @@ function ensureDirectories() {
 
 // ── Load / Save Settings ───────────────────────────────────────────
 function loadSettings() {
+  let raw = {};
   try {
     if (fs.existsSync(SETTINGS_PATH)) {
-      appSettings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+      raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
     }
   } catch (e) {
-    appSettings = {};
+    raw = {};
   }
   return {
     theme: 'dark',
@@ -89,8 +116,10 @@ function loadSettings() {
     speedMultiplier: 1.0,
     coordinateMode: 'absolute',
     streamerMode: false,
+    /** Global default: apply ±20% delay jitter (same as per-macro Randomize delays). */
+    randomTiming: true,
     profileHotkeys: {},
-    ...appSettings
+    ...raw
   };
 }
 
@@ -157,7 +186,16 @@ function createTray() {
     }
   });
 
-  tray.setToolTip(`${APP_NAME} - Profile: ${currentProfile}`);
+  setTrayTooltip();
+}
+
+function setTrayTooltip() {
+  if (!tray) return;
+  if (isAnonymousMode && anonymousDisplayTitle) {
+    tray.setToolTip(`${anonymousDisplayTitle} — Profile: ${currentProfile}`);
+  } else {
+    tray.setToolTip(`${APP_NAME} - Profile: ${currentProfile}`);
+  }
 }
 
 function updateTrayMenu() {
@@ -171,10 +209,20 @@ function updateTrayMenu() {
     click: () => switchProfile(p)
   }));
 
+  const headerLabel = isAnonymousMode && anonymousDisplayTitle ? anonymousDisplayTitle : APP_NAME;
+
   const contextMenu = Menu.buildFromTemplate([
-    { label: `${APP_NAME}`, enabled: false },
+    { label: headerLabel, enabled: false },
     { type: 'separator' },
     { label: 'Show Window', click: () => { mainWindow.show(); mainWindow.focus(); } },
+    { type: 'separator' },
+    {
+      label: `Macro binds: ${macroTriggersArmed ? 'ON' : 'OFF'}`,
+      click: () => {
+        macroTriggersArmed = !macroTriggersArmed;
+        sendMacroTriggersState();
+      }
+    },
     { type: 'separator' },
     { label: 'Profiles', submenu: profileMenuItems },
     { type: 'separator' },
@@ -200,7 +248,7 @@ function getProfiles() {
 function switchProfile(profileName) {
   currentProfile = profileName;
   if (tray) {
-    tray.setToolTip(`${APP_NAME} - Profile: ${currentProfile}`);
+    setTrayTooltip();
     updateTrayMenu();
   }
   if (mainWindow) {
@@ -241,19 +289,26 @@ function getProfileMacros(profileName) {
 }
 
 // ── Anonymous Mode ─────────────────────────────────────────────────
-function toggleAnonymousMode() {
-  isAnonymousMode = !isAnonymousMode;
-  updateTrayMenu();
+function setAnonymousMode(enabled) {
+  isAnonymousMode = !!enabled;
   if (mainWindow) {
+    if (isAnonymousMode) {
+      anonymousDisplayTitle = generateRandomProcessName();
+      mainWindow.setTitle(anonymousDisplayTitle);
+    } else {
+      anonymousDisplayTitle = '';
+      mainWindow.setTitle(APP_NAME);
+    }
     mainWindow.webContents.send('anonymous-mode-changed', isAnonymousMode);
+  } else if (!isAnonymousMode) {
+    anonymousDisplayTitle = '';
   }
-  
-  if (isAnonymousMode) {
-    // Hide window title
-    mainWindow.setTitle(generateRandomProcessName());
-  } else {
-    mainWindow.setTitle(APP_NAME);
-  }
+  updateTrayMenu();
+  setTrayTooltip();
+}
+
+function toggleAnonymousMode() {
+  setAnonymousMode(!isAnonymousMode);
 }
 
 function generateRandomProcessName() {
@@ -272,7 +327,17 @@ function generateRandomProcessName() {
 function setupIPC() {
   // Settings
   ipcMain.handle('get-settings', () => loadSettings());
-  ipcMain.handle('save-settings', (_, settings) => saveSettings(settings));
+  ipcMain.handle('save-settings', (_, settings) => {
+    saveSettings(settings);
+    return true;
+  });
+
+  ipcMain.handle('get-macro-triggers-state', () => ({ armed: macroTriggersArmed }));
+  ipcMain.handle('set-macro-triggers-armed', (_, armed) => {
+    macroTriggersArmed = !!armed;
+    sendMacroTriggersState();
+    return true;
+  });
   
   // Profiles
   ipcMain.handle('get-profiles', () => getProfiles());
@@ -320,7 +385,7 @@ function setupIPC() {
       name: name,
       version: '1.0',
       commands: [],
-      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '' }
+      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '', holdWhilePressed: false }
     };
     const filePath = path.join(PROFILES_DIR, profile, `${name}.kyrun`);
     fs.writeFileSync(filePath, JSON.stringify(macro, null, 2));
@@ -393,7 +458,8 @@ function setupIPC() {
         globalShortcut.unregister(registeredHotkeys.get(id));
       }
       globalShortcut.register(accelerator, () => {
-        mainWindow.webContents.send('hotkey-triggered', id);
+        if (!shouldFireGlobalHotkey(id)) return;
+        if (mainWindow) mainWindow.webContents.send('hotkey-triggered', id);
       });
       registeredHotkeys.set(id, accelerator);
       return true;
@@ -446,6 +512,7 @@ function setupIPC() {
   // ── Mouse Button Trigger Registration ─────────────────────────────
   // Electron's globalShortcut doesn't support mouse buttons, so we poll
   ipcMain.handle('register-mouse-trigger', (_, macroId, vkCode) => {
+    if (!input) return false;
     mouseTriggerBindings.set(vkCode, macroId);
     startMouseTriggerPolling();
     return true;
@@ -466,9 +533,13 @@ function setupIPC() {
     mainWindow.webContents.send('macro-state', { running: true });
 
     const speed = (settings.speedMultiplier || 1);
-    const randomize = settings.randomDelays || false;
+    const globalSettings = loadSettings();
+    const randomize = !!(settings.randomDelays || isAnonymousMode || globalSettings.randomTiming);
     const loopEnabled = settings.loop || false;
     const loopCount = settings.loopCount || 0;
+    const holdActive = !!(settings.triggerFromBind && settings.holdWhilePressed && settings.bindVk > 0);
+    const ignoreGoWhile = holdActive;
+    const releaseVk = holdActive ? settings.bindVk : 0;
 
     function jitter(ms) {
       if (!randomize) return Math.round(ms / speed);
@@ -476,11 +547,23 @@ function setupIPC() {
       return Math.max(1, Math.round((ms + (Math.random() * variance * 2 - variance)) / speed));
     }
 
-    async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+    async function sleep(ms) {
+      if (releaseVk) {
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) {
+          if (macroAbort) return;
+          if (!input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+          await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
+        }
+      } else {
+        await new Promise(r => setTimeout(r, ms));
+      }
+    }
 
     async function runOnce(cmds) {
       for (let i = 0; i < cmds.length; i++) {
         if (macroAbort) return;
+        if (releaseVk && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
         const cmd = cmds[i];
         mainWindow.webContents.send('macro-line', i);
         try {
@@ -504,6 +587,7 @@ function setupIPC() {
             case 'MouseMove': input.moveMouse(cmd.x, cmd.y); break;
             case 'GoTo': i = (cmd.targetLine - 1) - 1; break;
             case 'GoWhile': {
+              if (ignoreGoWhile) break;
               if (!cmd._counter) cmd._counter = 0;
               cmd._counter++;
               if (cmd._counter < cmd.count) { i = (cmd.startLine - 1) - 1; }
@@ -524,7 +608,12 @@ function setupIPC() {
     }
 
     try {
-      if (loopEnabled) {
+      if (holdActive) {
+        do {
+          if (macroAbort) break;
+          await runOnce(commands);
+        } while (!macroAbort && input.isKeyDown(releaseVk));
+      } else if (loopEnabled) {
         let iterations = 0;
         while (!macroAbort && (loopCount === 0 || iterations < loopCount)) {
           await runOnce(commands);
@@ -571,7 +660,7 @@ function startMouseTriggerPolling() {
       const pressed = input.isKeyDown(vkCode);
       const wasPressed = mouseButtonStates.get(vkCode) || false;
       if (pressed && !wasPressed) {
-        // Button just pressed — fire trigger
+        if (!shouldFireGlobalHotkey(macroId)) continue;
         if (mainWindow) mainWindow.webContents.send('hotkey-triggered', macroId);
       }
       mouseButtonStates.set(vkCode, pressed);
@@ -594,6 +683,10 @@ app.whenReady().then(() => {
   setupIPC();
   createWindow();
   createTray();
+  if (appSettings.anonymousOnStartup) {
+    setAnonymousMode(true);
+  }
+  sendMacroTriggersState();
 });
 
 app.on('window-all-closed', () => {
