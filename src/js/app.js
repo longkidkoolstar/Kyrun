@@ -582,24 +582,29 @@ function recordWheelHandler(e) {
 }
 
 // ── Macro Execution ──────────────────────────────────────────
+async function waitForMacroStopped(maxMs = 15000) {
+  const start = Date.now();
+  while (await window.kyrun.isMacroRunning()) {
+    if (Date.now() - start > maxMs) break;
+    await new Promise(r => setTimeout(r, 16));
+  }
+}
+
 async function runMacro() {
   if (!state.currentMacro || !state.commands.length) { showToast('No macro to run','error'); return; }
-  if (state.isRunning) { stopMacro(); return; }
-  state.isRunning = true;
-  updateRunningUI(true);
+  if (await window.kyrun.isMacroRunning()) {
+    try { await window.kyrun.stopMacro(); } catch {}
+    await waitForMacroStopped();
+  }
   try {
     const settings = { ...state.macroSettings, speedMultiplier: state.speedMultiplier, triggerFromBind: false };
     const result = await window.kyrun.executeMacro(state.commands, settings);
     if (!result.success) showToast(result.error||'Execution failed','error');
   } catch(e) { showToast('Input module not available','error'); }
-  state.isRunning = false;
-  updateRunningUI(false);
 }
 
 async function stopMacro() {
   try { await window.kyrun.stopMacro(); } catch {}
-  state.isRunning = false;
-  updateRunningUI(false);
 }
 
 function updateRunningUI(running) {
@@ -1085,22 +1090,21 @@ try {
       return;
     }
 
-    if (state.isRunning) { stopMacro(); return; }
+    if (await window.kyrun.isMacroRunning()) {
+      try { await window.kyrun.stopMacro(); } catch {}
+      await waitForMacroStopped();
+    }
     try {
       const raw = await window.kyrun.readMacroFile(macroPath);
       if (!raw) return;
       const data = JSON.parse(raw);
       if (!data || !data.commands) return;
-      
-      state.isRunning = true;
-      updateRunningUI(true);
+
       const settings = { ...data.settings, speedMultiplier: state.speedMultiplier, triggerFromBind: true };
       const result = await window.kyrun.executeMacro(data.commands, settings);
       if (!result.success && result.error !== 'Macro already running') {
         showToast(result.error||'Execution failed', 'error');
       }
-      state.isRunning = false;
-      updateRunningUI(false);
     } catch {}
   });
 } catch {}

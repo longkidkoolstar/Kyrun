@@ -631,8 +631,9 @@ function setupIPC() {
     const heldKeys = new Set();
     const heldMouse = new Set();
 
+    /** Release any keys/buttons still down from this macro (always; not only in hold-while-trigger mode). */
     function releaseTrackedHoldInputs() {
-      if (!holdActive || !input) return;
+      if (!input) return;
       const keys = [...heldKeys];
       const mice = [...heldMouse];
       heldKeys.clear();
@@ -692,51 +693,51 @@ function setupIPC() {
           switch (cmd.type) {
             case 'KeyDown':
               input.keyDown(cmd.keyCode);
-              if (holdActive) heldKeys.add(cmd.keyCode);
+              heldKeys.add(cmd.keyCode);
               break;
             case 'KeyUp':
               input.keyUp(cmd.keyCode);
-              if (holdActive) heldKeys.delete(cmd.keyCode);
+              heldKeys.delete(cmd.keyCode);
               break;
             case 'LeftDown':
               input.mouseDown('left');
-              if (holdActive) heldMouse.add('left');
+              heldMouse.add('left');
               break;
             case 'LeftUp':
               input.mouseUp('left');
-              if (holdActive) heldMouse.delete('left');
+              heldMouse.delete('left');
               break;
             case 'RightDown':
               input.mouseDown('right');
-              if (holdActive) heldMouse.add('right');
+              heldMouse.add('right');
               break;
             case 'RightUp':
               input.mouseUp('right');
-              if (holdActive) heldMouse.delete('right');
+              heldMouse.delete('right');
               break;
             case 'MiddleDown':
               input.mouseDown('middle');
-              if (holdActive) heldMouse.add('middle');
+              heldMouse.add('middle');
               break;
             case 'MiddleUp':
               input.mouseUp('middle');
-              if (holdActive) heldMouse.delete('middle');
+              heldMouse.delete('middle');
               break;
             case 'XButton1Down':
               input.mouseDown('x1');
-              if (holdActive) heldMouse.add('x1');
+              heldMouse.add('x1');
               break;
             case 'XButton1Up':
               input.mouseUp('x1');
-              if (holdActive) heldMouse.delete('x1');
+              heldMouse.delete('x1');
               break;
             case 'XButton2Down':
               input.mouseDown('x2');
-              if (holdActive) heldMouse.add('x2');
+              heldMouse.add('x2');
               break;
             case 'XButton2Up':
               input.mouseUp('x2');
-              if (holdActive) heldMouse.delete('x2');
+              heldMouse.delete('x2');
               break;
             case 'ScrollUp': input.scroll(cmd.value || 3); break;
             case 'ScrollDown': input.scroll(-(cmd.value || 3)); break;
@@ -785,7 +786,7 @@ function setupIPC() {
       }
     } catch(e) { /* macro error */ }
     finally {
-      if (holdActive) releaseTrackedHoldInputs();
+      releaseTrackedHoldInputs();
     }
 
     macroRunning = false;
@@ -796,7 +797,8 @@ function setupIPC() {
 
   ipcMain.handle('stop-macro', () => {
     macroAbort = true;
-    macroRunning = false;
+    // Keep macroRunning true until execute-macro finishes (finally + release); so is-macro-running
+    // and queued triggers can wait for a clean handoff to the next macro.
     return true;
   });
 
