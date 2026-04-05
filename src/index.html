@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kyrun</title>
+  <link rel="stylesheet" href="css/index.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ═══ TITLEBAR ═══ -->
+    <div class="titlebar">
+      <div class="titlebar__logo">
+        <div class="titlebar__logo-icon">K</div>
+        <span class="titlebar__title">KYRUN</span>
+      </div>
+      <div class="titlebar__menu">
+        <button class="titlebar__menu-item" data-action="import">File</button>
+        <button class="titlebar__menu-item" data-action="settings">Settings</button>
+        <button class="titlebar__menu-item" data-action="help">Help</button>
+      </div>
+      <div class="titlebar__spacer"></div>
+      <div class="titlebar__status">
+        <div class="titlebar__status-item" id="status-driver">
+          <span class="titlebar__status-dot titlebar__status-dot--inactive" id="driver-dot"></span>
+          <span>Driver</span>
+        </div>
+        <div class="titlebar__status-item" id="status-macro">
+          <span class="titlebar__status-dot titlebar__status-dot--inactive" id="macro-dot"></span>
+          <span id="macro-status-text">Stopped</span>
+        </div>
+      </div>
+      <div class="titlebar__controls">
+        <button class="titlebar__btn" id="btn-minimize" title="Minimize">─</button>
+        <button class="titlebar__btn" id="btn-maximize" title="Maximize">□</button>
+        <button class="titlebar__btn titlebar__btn--close" id="btn-close" title="Close">✕</button>
+      </div>
+    </div>
+
+    <!-- ═══ MAIN CONTENT ═══ -->
+    <div class="main-content">
+      <!-- ═══ SIDEBAR ═══ -->
+      <div class="sidebar">
+        <!-- Profile Selector -->
+        <div class="profile-selector">
+          <select class="profile-selector__dropdown" id="profile-dropdown">
+            <option value="Default">Default</option>
+          </select>
+          <div class="profile-selector__actions">
+            <button class="profile-selector__btn" id="btn-add-profile" title="New Profile">+ New</button>
+            <button class="profile-selector__btn" id="btn-rename-profile" title="Rename Profile">✎ Rename</button>
+            <button class="profile-selector__btn" id="btn-delete-profile" title="Delete Profile">✕ Delete</button>
+          </div>
+        </div>
+
+        <!-- Macro File Tree -->
+        <div class="sidebar__section">
+          <div class="sidebar__section-header">
+            <span>Macros</span>
+            <div class="sidebar__section-actions">
+              <button class="sidebar__icon-btn" id="btn-new-macro" title="New Macro">+</button>
+              <button class="sidebar__icon-btn" id="btn-new-folder" title="New Folder">📁</button>
+              <button class="sidebar__icon-btn" id="btn-import-macro" title="Import Macro">📥</button>
+            </div>
+          </div>
+        </div>
+        <div class="file-tree" id="file-tree">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- ═══ EDITOR AREA ═══ -->
+      <div class="editor-area" id="editor-area">
+        <!-- Toolbar -->
+        <div class="toolbar" id="editor-toolbar">
+          <div class="toolbar__group">
+            <button class="toolbar__btn" id="btn-record" title="Record Macro (Ctrl+R)">
+              <span class="toolbar__btn-icon">⏺</span> Record
+            </button>
+            <button class="toolbar__btn toolbar__btn--primary" id="btn-play" title="Run Macro (F5)">
+              <span class="toolbar__btn-icon">▶</span> Run
+            </button>
+            <button class="toolbar__btn toolbar__btn--danger" id="btn-stop" title="Stop Macro (F6)">
+              <span class="toolbar__btn-icon">■</span> Stop
+            </button>
+          </div>
+          <div class="toolbar__separator"></div>
+          <div class="toolbar__group">
+            <button class="toolbar__btn" id="btn-undo" title="Undo (Ctrl+Z)">↩</button>
+            <button class="toolbar__btn" id="btn-redo" title="Redo (Ctrl+Y)">↪</button>
+          </div>
+          <div class="toolbar__separator"></div>
+          <div class="toolbar__group">
+            <button class="toolbar__btn" id="btn-cut" title="Cut (Ctrl+X)">✂</button>
+            <button class="toolbar__btn" id="btn-copy" title="Copy (Ctrl+C)">📋</button>
+            <button class="toolbar__btn" id="btn-paste" title="Paste (Ctrl+V)">📌</button>
+          </div>
+          <div class="toolbar__separator"></div>
+          <div class="toolbar__group">
+            <button class="toolbar__btn" id="btn-move-up" title="Move Up">↑</button>
+            <button class="toolbar__btn" id="btn-move-down" title="Move Down">↓</button>
+          </div>
+          <div class="toolbar__separator"></div>
+          <div class="speed-slider">
+            <span style="font-size: 11px; color: var(--text-tertiary);">Speed:</span>
+            <input type="range" class="speed-slider__input" id="speed-slider" min="25" max="200" value="100">
+            <span class="speed-slider__value" id="speed-value">100%</span>
+          </div>
+          <div class="toolbar__spacer"></div>
+          <div class="toolbar__group">
+            <button class="toolbar__btn" id="btn-save" title="Save (Ctrl+S)">💾 Save</button>
+            <button class="toolbar__btn" id="btn-export" title="Export">📤 Export</button>
+          </div>
+        </div>
+
+        <!-- Welcome View (shown when no macro is open) -->
+        <div class="welcome-view" id="welcome-view">
+          <div class="welcome-view__logo">K</div>
+          <h1 class="welcome-view__title">Welcome to Kyrun</h1>
+          <p class="welcome-view__subtitle">
+            Create, edit, and execute macros for any keyboard and mouse. 
+            Select a macro from the sidebar or create a new one to get started.
+          </p>
+          <div class="welcome-view__actions">
+            <button class="btn btn--primary" id="btn-welcome-new">+ New Macro</button>
+            <button class="btn btn--secondary" id="btn-welcome-import">Import File</button>
+          </div>
+        </div>
+
+        <!-- Editor View (shown when a macro is open) -->
+        <div class="editor-content hidden" id="editor-content">
+          <!-- Command List -->
+          <div class="command-list">
+            <div class="command-list__header">
+              <span class="command-list__header-col command-list__header-col--num">#</span>
+              <span style="width:14px"></span>
+              <span class="command-list__header-col command-list__header-col--type">Command</span>
+              <span class="command-list__header-col command-list__header-col--params">Parameters</span>
+              <span class="command-list__header-col command-list__header-col--delay">Timing</span>
+            </div>
+            <div class="command-list__body" id="command-list-body">
+              <div class="command-list__empty" id="command-empty">
+                <div class="command-list__empty-icon">📝</div>
+                <div class="command-list__empty-text">No commands yet</div>
+                <div class="command-list__empty-hint">Click "Record" or add commands from the panel on the right</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Properties Panel -->
+          <div class="properties-panel" id="properties-panel">
+            <!-- Macro Settings -->
+            <div class="properties-panel__header">⚙ Macro Settings</div>
+            <div class="properties-panel__section">
+              <div class="properties-panel__section-title">Binding</div>
+              <div class="properties-panel__field">
+                <label class="properties-panel__label">Trigger Key</label>
+                <input type="text" class="properties-panel__input" id="bind-key-input" placeholder="Click to set..." readonly>
+              </div>
+              <div class="properties-panel__field">
+                <label class="properties-panel__label">Window Bind</label>
+                <input type="text" class="properties-panel__input" id="window-bind-input" placeholder="Any window">
+              </div>
+            </div>
+            <div class="properties-panel__section">
+              <div class="properties-panel__section-title">Execution</div>
+              <div class="properties-panel__checkbox-group">
+                <input type="checkbox" class="properties-panel__checkbox" id="loop-enabled">
+                <label class="properties-panel__checkbox-label" for="loop-enabled">Loop macro</label>
+              </div>
+              <div class="properties-panel__field" id="loop-count-field" style="display:none">
+                <label class="properties-panel__label">Loop Count (0 = infinite)</label>
+                <input type="number" class="properties-panel__input" id="loop-count" value="0" min="0">
+              </div>
+              <div class="properties-panel__checkbox-group">
+                <input type="checkbox" class="properties-panel__checkbox" id="random-delays">
+                <label class="properties-panel__checkbox-label" for="random-delays">Randomize delays (±20%)</label>
+              </div>
+            </div>
+
+            <!-- Command Palette -->
+            <div class="command-palette">
+              <div class="command-palette__title">Add Command</div>
+              <div class="command-palette__grid">
+                <button class="command-palette__btn" data-cmd="KeyDown">
+                  <span class="command-palette__btn-icon" style="color:#60a5fa">⬇</span> Key Down
+                </button>
+                <button class="command-palette__btn" data-cmd="KeyUp">
+                  <span class="command-palette__btn-icon" style="color:#818cf8">⬆</span> Key Up
+                </button>
+                <button class="command-palette__btn" data-cmd="LeftDown">
+                  <span class="command-palette__btn-icon" style="color:#f472b6">🖱</span> Left Down
+                </button>
+                <button class="command-palette__btn" data-cmd="LeftUp">
+                  <span class="command-palette__btn-icon" style="color:#e879a3">🖱</span> Left Up
+                </button>
+                <button class="command-palette__btn" data-cmd="RightDown">
+                  <span class="command-palette__btn-icon" style="color:#f472b6">🖱</span> Right Down
+                </button>
+                <button class="command-palette__btn" data-cmd="RightUp">
+                  <span class="command-palette__btn-icon" style="color:#e879a3">🖱</span> Right Up
+                </button>
+                <button class="command-palette__btn" data-cmd="Delay">
+                  <span class="command-palette__btn-icon" style="color:#737e8c">⏱</span> Delay
+                </button>
+                <button class="command-palette__btn" data-cmd="RandomDelay">
+                  <span class="command-palette__btn-icon" style="color:#737e8c">🎲</span> Rnd Delay
+                </button>
+                <button class="command-palette__btn" data-cmd="MouseMove">
+                  <span class="command-palette__btn-icon" style="color:#22d3ee">↗</span> Mouse Move
+                </button>
+                <button class="command-palette__btn" data-cmd="GoTo">
+                  <span class="command-palette__btn-icon" style="color:#f59e0b">→</span> Go To
+                </button>
+                <button class="command-palette__btn" data-cmd="GoWhile">
+                  <span class="command-palette__btn-icon" style="color:#c084fc">🔁</span> Loop
+                </button>
+                <button class="command-palette__btn" data-cmd="Comment">
+                  <span class="command-palette__btn-icon" style="color:#64748b">//</span> Comment
+                </button>
+                <button class="command-palette__btn" data-cmd="ColorDetect">
+                  <span class="command-palette__btn-icon" style="color:#34d399">🎨</span> Color
+                </button>
+                <button class="command-palette__btn" data-cmd="Variable">
+                  <span class="command-palette__btn-icon" style="color:#fb923c">$</span> Variable
+                </button>
+              </div>
+            </div>
+
+            <!-- Keyboard Visualizer -->
+            <div class="keyboard-viz" id="keyboard-viz">
+              <div class="keyboard-viz__title">Keyboard</div>
+              <div class="keyboard-viz__row">
+                <div class="keyboard-viz__key" data-key="27">Esc</div>
+                <div style="width:20px"></div>
+                <div class="keyboard-viz__key" data-key="112">F1</div>
+                <div class="keyboard-viz__key" data-key="113">F2</div>
+                <div class="keyboard-viz__key" data-key="114">F3</div>
+                <div class="keyboard-viz__key" data-key="115">F4</div>
+                <div style="width:8px"></div>
+                <div class="keyboard-viz__key" data-key="116">F5</div>
+                <div class="keyboard-viz__key" data-key="117">F6</div>
+                <div class="keyboard-viz__key" data-key="118">F7</div>
+                <div class="keyboard-viz__key" data-key="119">F8</div>
+                <div style="width:8px"></div>
+                <div class="keyboard-viz__key" data-key="120">F9</div>
+                <div class="keyboard-viz__key" data-key="121">F10</div>
+                <div class="keyboard-viz__key" data-key="122">F11</div>
+                <div class="keyboard-viz__key" data-key="123">F12</div>
+              </div>
+              <div class="keyboard-viz__row" style="margin-top:6px">
+                <div class="keyboard-viz__key" data-key="192">`</div>
+                <div class="keyboard-viz__key" data-key="49">1</div>
+                <div class="keyboard-viz__key" data-key="50">2</div>
+                <div class="keyboard-viz__key" data-key="51">3</div>
+                <div class="keyboard-viz__key" data-key="52">4</div>
+                <div class="keyboard-viz__key" data-key="53">5</div>
+                <div class="keyboard-viz__key" data-key="54">6</div>
+                <div class="keyboard-viz__key" data-key="55">7</div>
+                <div class="keyboard-viz__key" data-key="56">8</div>
+                <div class="keyboard-viz__key" data-key="57">9</div>
+                <div class="keyboard-viz__key" data-key="48">0</div>
+                <div class="keyboard-viz__key" data-key="189">-</div>
+                <div class="keyboard-viz__key" data-key="187">=</div>
+                <div class="keyboard-viz__key keyboard-viz__key--wide" data-key="8">⌫</div>
+              </div>
+              <div class="keyboard-viz__row">
+                <div class="keyboard-viz__key keyboard-viz__key--wide" data-key="9">Tab</div>
+                <div class="keyboard-viz__key" data-key="81">Q</div>
+                <div class="keyboard-viz__key" data-key="87">W</div>
+                <div class="keyboard-viz__key" data-key="69">E</div>
+                <div class="keyboard-viz__key" data-key="82">R</div>
+                <div class="keyboard-viz__key" data-key="84">T</div>
+                <div class="keyboard-viz__key" data-key="89">Y</div>
+                <div class="keyboard-viz__key" data-key="85">U</div>
+                <div class="keyboard-viz__key" data-key="73">I</div>
+                <div class="keyboard-viz__key" data-key="79">O</div>
+                <div class="keyboard-viz__key" data-key="80">P</div>
+                <div class="keyboard-viz__key" data-key="219">[</div>
+                <div class="keyboard-viz__key" data-key="221">]</div>
+                <div class="keyboard-viz__key" data-key="220">\</div>
+              </div>
+              <div class="keyboard-viz__row">
+                <div class="keyboard-viz__key keyboard-viz__key--wider" data-key="20">Caps</div>
+                <div class="keyboard-viz__key" data-key="65">A</div>
+                <div class="keyboard-viz__key" data-key="83">S</div>
+                <div class="keyboard-viz__key" data-key="68">D</div>
+                <div class="keyboard-viz__key" data-key="70">F</div>
+                <div class="keyboard-viz__key" data-key="71">G</div>
+                <div class="keyboard-viz__key" data-key="72">H</div>
+                <div class="keyboard-viz__key" data-key="74">J</div>
+                <div class="keyboard-viz__key" data-key="75">K</div>
+                <div class="keyboard-viz__key" data-key="76">L</div>
+                <div class="keyboard-viz__key" data-key="186">;</div>
+                <div class="keyboard-viz__key" data-key="222">'</div>
+                <div class="keyboard-viz__key keyboard-viz__key--wider" data-key="13">Enter</div>
+              </div>
+              <div class="keyboard-viz__row">
+                <div class="keyboard-viz__key keyboard-viz__key--wider" data-key="16" style="min-width:72px">Shift</div>
+                <div class="keyboard-viz__key" data-key="90">Z</div>
+                <div class="keyboard-viz__key" data-key="88">X</div>
+                <div class="keyboard-viz__key" data-key="67">C</div>
+                <div class="keyboard-viz__key" data-key="86">V</div>
+                <div class="keyboard-viz__key" data-key="66">B</div>
+                <div class="keyboard-viz__key" data-key="78">N</div>
+                <div class="keyboard-viz__key" data-key="77">M</div>
+                <div class="keyboard-viz__key" data-key="188">,</div>
+                <div class="keyboard-viz__key" data-key="190">.</div>
+                <div class="keyboard-viz__key" data-key="191">/</div>
+                <div class="keyboard-viz__key keyboard-viz__key--wider" data-key="16" style="min-width:72px">Shift</div>
+              </div>
+              <div class="keyboard-viz__row">
+                <div class="keyboard-viz__key keyboard-viz__key--wide" data-key="17">Ctrl</div>
+                <div class="keyboard-viz__key" data-key="91">Win</div>
+                <div class="keyboard-viz__key keyboard-viz__key--wide" data-key="18">Alt</div>
+                <div class="keyboard-viz__key keyboard-viz__key--space" data-key="32">Space</div>
+                <div class="keyboard-viz__key keyboard-viz__key--wide" data-key="18">Alt</div>
+                <div class="keyboard-viz__key" data-key="91">Win</div>
+                <div class="keyboard-viz__key keyboard-viz__key--wide" data-key="17">Ctrl</div>
+              </div>
+            </div>
+
+            <!-- Selected Command Properties -->
+            <div class="properties-panel__section hidden" id="selected-command-props">
+              <div class="properties-panel__section-title">Command Properties</div>
+              <div id="command-props-content">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings View -->
+        <div class="settings-view" id="settings-view">
+          <h1 class="settings-view__title">Settings</h1>
+          
+          <div class="settings-view__group">
+            <div class="settings-view__group-title">General</div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Minimize to Tray</div>
+                <div class="settings-view__row-desc">Keep running in system tray when closed</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-minimize-tray" checked>
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Start Minimized</div>
+                <div class="settings-view__row-desc">Launch directly to system tray</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-start-minimized">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Streamer Mode</div>
+                <div class="settings-view__row-desc">Hide sensitive information from the UI</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-streamer-mode">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-view__group">
+            <div class="settings-view__group-title">Anonymous Mode</div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Auto-enable on startup</div>
+                <div class="settings-view__row-desc">Automatically activate anonymous mode when Kyrun launches</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-anonymous-startup">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Randomize input timing</div>
+                <div class="settings-view__row-desc">Add ±5-15ms random jitter to all inputs</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-random-timing" checked>
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-view__group">
+            <div class="settings-view__group-title">Macros</div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Default Delay (ms)</div>
+                <div class="settings-view__row-desc">Default delay between commands when recording</div>
+              </div>
+              <input type="number" class="properties-panel__input" style="width:80px" id="setting-default-delay" value="50" min="1">
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Coordinate Mode</div>
+                <div class="settings-view__row-desc">How mouse coordinates are interpreted</div>
+              </div>
+              <select class="properties-panel__select" style="width:120px" id="setting-coord-mode">
+                <option value="absolute">Absolute</option>
+                <option value="relative">Relative</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-view__group">
+            <div class="settings-view__group-title">Profile Hotkeys</div>
+            <div id="profile-hotkeys-list">
+              <!-- Dynamically populated -->
+            </div>
+            <p style="font-size: 11px; color: var(--text-tertiary); margin-top: 8px;">
+              Assign global hotkeys to switch between profiles instantly.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ STATUS BAR ═══ -->
+    <div class="statusbar">
+      <div class="statusbar__item">
+        <span>Profile:</span>
+        <span id="statusbar-profile" style="color: var(--accent-primary);">Default</span>
+      </div>
+      <div class="statusbar__item" id="statusbar-macro-name">
+        <span>No macro open</span>
+      </div>
+      <div class="statusbar__item" id="statusbar-commands">
+        <span>0 commands</span>
+      </div>
+      <div class="statusbar__spacer"></div>
+      <div class="statusbar__anonymous statusbar__anonymous--off" id="btn-anonymous" title="Toggle Anonymous Mode">
+        <span>🕶</span>
+        <span id="anonymous-text">Anonymous: OFF</span>
+      </div>
+      <div class="statusbar__item">
+        <span id="statusbar-pid"></span>
+      </div>
+    </div>
+
+    <!-- ═══ CONTEXT MENU ═══ -->
+    <div class="context-menu" id="context-menu">
+      <!-- Dynamically populated -->
+    </div>
+
+    <!-- ═══ MODAL OVERLAY ═══ -->
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal" id="modal">
+        <div class="modal__header">
+          <h2 class="modal__title" id="modal-title"></h2>
+          <button class="modal__close" id="modal-close">✕</button>
+        </div>
+        <div class="modal__body" id="modal-body"></div>
+        <div class="modal__footer" id="modal-footer"></div>
+      </div>
+    </div>
+
+    <!-- ═══ TOAST CONTAINER ═══ -->
+    <div class="toast-container" id="toast-container"></div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

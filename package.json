@@ -1,0 +1,19 @@
+{
+  "name": "kyrun",
+  "version": "1.0.0",
+  "description": "Advanced macro editor and executor — Keyran-compatible",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "keywords": ["macro", "automation", "keyran", "gaming"],
+  "author": "Kyrun",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "robotjs": "^0.6.0"
+  }
+}
