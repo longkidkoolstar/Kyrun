@@ -1,7 +1,11 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, Tray, Menu, nativeImage, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Tray, Menu, nativeImage, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+
+// Load native input simulator (koffi FFI → Windows SendInput)
+let input = null;
+try { input = require('./src/native/input.js'); console.log('Native input loaded via koffi'); } catch(e) { console.log('Native input not available:', e.message); }
 
 // ── App Configuration ──────────────────────────────────────────────
 const APP_NAME = 'Kyrun';
@@ -14,6 +18,10 @@ let isAnonymousMode = false;
 let currentProfile = 'Default';
 let appSettings = {};
 let registeredHotkeys = new Map();
+let macroRunning = false;
+let macroAbort = false;
+let mouseTriggerInterval = null; // polling for mouse button triggers
+let mouseTriggerBindings = new Map(); // vkCode → macroId
 
 // ── Ensure directories exist ───────────────────────────────────────
 function ensureDirectories() {
@@ -387,14 +395,181 @@ function setupIPC() {
     return true;
   });
 
+  // Rename profile
+  ipcMain.handle('rename-profile', (_, oldName, newName) => {
+    if (oldName === 'Default') return false;
+    const oldDir = path.join(PROFILES_DIR, oldName);
+    const newDir = path.join(PROFILES_DIR, newName);
+    if (!fs.existsSync(oldDir) || fs.existsSync(newDir)) return false;
+    fs.renameSync(oldDir, newDir);
+    if (currentProfile === oldName) switchProfile(newName);
+    return getProfiles();
+  });
+
+  // Copy imported file into current profile directory
+  ipcMain.handle('import-to-profile', (_, sourcePath, destName) => {
+    try {
+      const dest = path.join(PROFILES_DIR, currentProfile, destName);
+      fs.copyFileSync(sourcePath, dest);
+      return true;
+    } catch { return false; }
+  });
+
+  // Mouse position
+  ipcMain.handle('get-mouse-position', () => {
+    if (input) return input.getMousePos();
+    const pt = screen.getCursorScreenPoint();
+    return { x: pt.x, y: pt.y };
+  });
+
+  // Pixel color at position
+  ipcMain.handle('get-pixel-color', (_, x, y) => {
+    if (!input) return '000000';
+    try { return input.getPixelColor(x, y); } catch { return '000000'; }
+  });
+
+  // ── Mouse Button Trigger Registration ─────────────────────────────
+  // Electron's globalShortcut doesn't support mouse buttons, so we poll
+  ipcMain.handle('register-mouse-trigger', (_, macroId, vkCode) => {
+    mouseTriggerBindings.set(vkCode, macroId);
+    startMouseTriggerPolling();
+    return true;
+  });
+
+  ipcMain.handle('unregister-mouse-trigger', (_, vkCode) => {
+    mouseTriggerBindings.delete(vkCode);
+    if (mouseTriggerBindings.size === 0) stopMouseTriggerPolling();
+    return true;
+  });
+
+  // ── Macro Execution ──────────────────────────────────────────────
+  ipcMain.handle('execute-macro', async (_, commands, settings) => {
+    if (macroRunning) return { success: false, error: 'Macro already running' };
+    if (!input) return { success: false, error: 'Input module not available' };
+    macroRunning = true;
+    macroAbort = false;
+    mainWindow.webContents.send('macro-state', { running: true });
+
+    const speed = (settings.speedMultiplier || 1);
+    const randomize = settings.randomDelays || false;
+    const loopEnabled = settings.loop || false;
+    const loopCount = settings.loopCount || 0;
+
+    function jitter(ms) {
+      if (!randomize) return Math.round(ms / speed);
+      const variance = ms * 0.2;
+      return Math.max(1, Math.round((ms + (Math.random() * variance * 2 - variance)) / speed));
+    }
+
+    async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function runOnce(cmds) {
+      for (let i = 0; i < cmds.length; i++) {
+        if (macroAbort) return;
+        const cmd = cmds[i];
+        mainWindow.webContents.send('macro-line', i);
+        try {
+          switch (cmd.type) {
+            case 'KeyDown': input.keyDown(cmd.keyCode); break;
+            case 'KeyUp': input.keyUp(cmd.keyCode); break;
+            case 'LeftDown': input.mouseDown('left'); break;
+            case 'LeftUp': input.mouseUp('left'); break;
+            case 'RightDown': input.mouseDown('right'); break;
+            case 'RightUp': input.mouseUp('right'); break;
+            case 'MiddleDown': input.mouseDown('middle'); break;
+            case 'MiddleUp': input.mouseUp('middle'); break;
+            case 'XButton1Down': input.mouseDown('x1'); break;
+            case 'XButton1Up': input.mouseUp('x1'); break;
+            case 'XButton2Down': input.mouseDown('x2'); break;
+            case 'XButton2Up': input.mouseUp('x2'); break;
+            case 'ScrollUp': input.scroll(cmd.value || 3); break;
+            case 'ScrollDown': input.scroll(-(cmd.value || 3)); break;
+            case 'Delay': await sleep(jitter(cmd.value)); break;
+            case 'RandomDelay': await sleep(jitter(Math.floor(Math.random()*(cmd.max-cmd.min)+cmd.min))); break;
+            case 'MouseMove': input.moveMouse(cmd.x, cmd.y); break;
+            case 'GoTo': i = (cmd.targetLine - 1) - 1; break;
+            case 'GoWhile': {
+              if (!cmd._counter) cmd._counter = 0;
+              cmd._counter++;
+              if (cmd._counter < cmd.count) { i = (cmd.startLine - 1) - 1; }
+              else { cmd._counter = 0; }
+              break;
+            }
+            case 'Comment': break;
+            case 'ColorDetect': {
+              const color = input.getPixelColor(cmd.x, cmd.y);
+              if (color.toLowerCase() !== (cmd.color || '').toLowerCase()) {
+                i++;
+              }
+              break;
+            }
+          }
+        } catch(err) { /* skip command on error */ }
+      }
+    }
+
+    try {
+      if (loopEnabled) {
+        let iterations = 0;
+        while (!macroAbort && (loopCount === 0 || iterations < loopCount)) {
+          await runOnce(commands);
+          iterations++;
+        }
+      } else {
+        await runOnce(commands);
+      }
+    } catch(e) { /* macro error */ }
+
+    macroRunning = false;
+    macroAbort = false;
+    mainWindow.webContents.send('macro-state', { running: false });
+    return { success: true };
+  });
+
+  ipcMain.handle('stop-macro', () => {
+    macroAbort = true;
+    macroRunning = false;
+    return true;
+  });
+
+  ipcMain.handle('is-macro-running', () => macroRunning);
+
   // App info
   ipcMain.handle('get-app-info', () => ({
     name: APP_NAME,
     version: app.getVersion(),
     profilesDir: PROFILES_DIR,
     platform: process.platform,
-    pid: process.pid
+    pid: process.pid,
+    hasInput: !!input
   }));
+}
+
+// ── Mouse Button Trigger Polling ───────────────────────────────────
+// Checks if bound mouse buttons are pressed and fires trigger events
+let mouseButtonStates = new Map();
+
+function startMouseTriggerPolling() {
+  if (mouseTriggerInterval || !input) return;
+  mouseTriggerInterval = setInterval(() => {
+    for (const [vkCode, macroId] of mouseTriggerBindings) {
+      const pressed = input.isKeyDown(vkCode);
+      const wasPressed = mouseButtonStates.get(vkCode) || false;
+      if (pressed && !wasPressed) {
+        // Button just pressed — fire trigger
+        if (mainWindow) mainWindow.webContents.send('hotkey-triggered', macroId);
+      }
+      mouseButtonStates.set(vkCode, pressed);
+    }
+  }, 16); // ~60Hz polling
+}
+
+function stopMouseTriggerPolling() {
+  if (mouseTriggerInterval) {
+    clearInterval(mouseTriggerInterval);
+    mouseTriggerInterval = null;
+  }
+  mouseButtonStates.clear();
 }
 
 // ── App Lifecycle ──────────────────────────────────────────────────

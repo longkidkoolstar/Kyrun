@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('kyrun', {
   switchProfile: (name) => ipcRenderer.invoke('switch-profile', name),
   createProfile: (name) => ipcRenderer.invoke('create-profile', name),
   deleteProfile: (name) => ipcRenderer.invoke('delete-profile', name),
+  renameProfile: (oldName, newName) => ipcRenderer.invoke('rename-profile', oldName, newName),
   getProfileMacros: (name) => ipcRenderer.invoke('get-profile-macros', name),
 
   // ── Macro Files ────────────────────────────
@@ -23,6 +24,18 @@ contextBridge.exposeInMainWorld('kyrun', {
   // ── Import / Export ────────────────────────
   importFileDialog: () => ipcRenderer.invoke('import-file-dialog'),
   exportFileDialog: (name) => ipcRenderer.invoke('export-file-dialog', name),
+  importToProfile: (src, dest) => ipcRenderer.invoke('import-to-profile', src, dest),
+
+  // ── Macro Execution ────────────────────────
+  executeMacro: (commands, settings) => ipcRenderer.invoke('execute-macro', commands, settings),
+  stopMacro: () => ipcRenderer.invoke('stop-macro'),
+  isMacroRunning: () => ipcRenderer.invoke('is-macro-running'),
+  registerMouseTrigger: (id, vk) => ipcRenderer.invoke('register-mouse-trigger', id, vk),
+  unregisterMouseTrigger: (vk) => ipcRenderer.invoke('unregister-mouse-trigger', vk),
+
+  // ── Mouse / Screen ─────────────────────────
+  getMousePosition: () => ipcRenderer.invoke('get-mouse-position'),
+  getPixelColor: (x, y) => ipcRenderer.invoke('get-pixel-color', x, y),
 
   // ── Anonymous Mode ─────────────────────────
   toggleAnonymous: () => ipcRenderer.invoke('toggle-anonymous'),
@@ -41,6 +54,8 @@ contextBridge.exposeInMainWorld('kyrun', {
   onProfileChanged: (cb) => ipcRenderer.on('profile-changed', (_, name) => cb(name)),
   onAnonymousModeChanged: (cb) => ipcRenderer.on('anonymous-mode-changed', (_, status) => cb(status)),
   onHotkeyTriggered: (cb) => ipcRenderer.on('hotkey-triggered', (_, id) => cb(id)),
+  onMacroState: (cb) => ipcRenderer.on('macro-state', (_, data) => cb(data)),
+  onMacroLine: (cb) => ipcRenderer.on('macro-line', (_, line) => cb(line)),
 
   // ── App Info ───────────────────────────────
   getAppInfo: () => ipcRenderer.invoke('get-app-info')

@@ -157,10 +157,6 @@
                 <label class="properties-panel__label">Trigger Key</label>
                 <input type="text" class="properties-panel__input" id="bind-key-input" placeholder="Click to set..." readonly>
               </div>
-              <div class="properties-panel__field">
-                <label class="properties-panel__label">Window Bind</label>
-                <input type="text" class="properties-panel__input" id="window-bind-input" placeholder="Any window">
-              </div>
             </div>
             <div class="properties-panel__section">
               <div class="properties-panel__section-title">Execution</div>
@@ -182,48 +178,28 @@
             <div class="command-palette">
               <div class="command-palette__title">Add Command</div>
               <div class="command-palette__grid">
-                <button class="command-palette__btn" data-cmd="KeyDown">
-                  <span class="command-palette__btn-icon" style="color:#60a5fa">⬇</span> Key Down
-                </button>
-                <button class="command-palette__btn" data-cmd="KeyUp">
-                  <span class="command-palette__btn-icon" style="color:#818cf8">⬆</span> Key Up
-                </button>
-                <button class="command-palette__btn" data-cmd="LeftDown">
-                  <span class="command-palette__btn-icon" style="color:#f472b6">🖱</span> Left Down
-                </button>
-                <button class="command-palette__btn" data-cmd="LeftUp">
-                  <span class="command-palette__btn-icon" style="color:#e879a3">🖱</span> Left Up
-                </button>
-                <button class="command-palette__btn" data-cmd="RightDown">
-                  <span class="command-palette__btn-icon" style="color:#f472b6">🖱</span> Right Down
-                </button>
-                <button class="command-palette__btn" data-cmd="RightUp">
-                  <span class="command-palette__btn-icon" style="color:#e879a3">🖱</span> Right Up
-                </button>
-                <button class="command-palette__btn" data-cmd="Delay">
-                  <span class="command-palette__btn-icon" style="color:#737e8c">⏱</span> Delay
-                </button>
-                <button class="command-palette__btn" data-cmd="RandomDelay">
-                  <span class="command-palette__btn-icon" style="color:#737e8c">🎲</span> Rnd Delay
-                </button>
-                <button class="command-palette__btn" data-cmd="MouseMove">
-                  <span class="command-palette__btn-icon" style="color:#22d3ee">↗</span> Mouse Move
-                </button>
-                <button class="command-palette__btn" data-cmd="GoTo">
-                  <span class="command-palette__btn-icon" style="color:#f59e0b">→</span> Go To
-                </button>
-                <button class="command-palette__btn" data-cmd="GoWhile">
-                  <span class="command-palette__btn-icon" style="color:#c084fc">🔁</span> Loop
-                </button>
-                <button class="command-palette__btn" data-cmd="Comment">
-                  <span class="command-palette__btn-icon" style="color:#64748b">//</span> Comment
-                </button>
-                <button class="command-palette__btn" data-cmd="ColorDetect">
-                  <span class="command-palette__btn-icon" style="color:#34d399">🎨</span> Color
-                </button>
-                <button class="command-palette__btn" data-cmd="Variable">
-                  <span class="command-palette__btn-icon" style="color:#fb923c">$</span> Variable
-                </button>
+                <button class="command-palette__btn" data-cmd="KeyDown"><span class="command-palette__btn-icon" style="color:#60a5fa">⬇</span> Key Down</button>
+                <button class="command-palette__btn" data-cmd="KeyUp"><span class="command-palette__btn-icon" style="color:#818cf8">⬆</span> Key Up</button>
+                <button class="command-palette__btn" data-cmd="LeftDown"><span class="command-palette__btn-icon" style="color:#f472b6">🖱</span> Left Down</button>
+                <button class="command-palette__btn" data-cmd="LeftUp"><span class="command-palette__btn-icon" style="color:#e879a3">🖱</span> Left Up</button>
+                <button class="command-palette__btn" data-cmd="RightDown"><span class="command-palette__btn-icon" style="color:#f472b6">🖱</span> Right Down</button>
+                <button class="command-palette__btn" data-cmd="RightUp"><span class="command-palette__btn-icon" style="color:#e879a3">🖱</span> Right Up</button>
+                <button class="command-palette__btn" data-cmd="MiddleDown"><span class="command-palette__btn-icon" style="color:#a78bfa">🖱</span> Mid Down</button>
+                <button class="command-palette__btn" data-cmd="MiddleUp"><span class="command-palette__btn-icon" style="color:#8b5cf6">🖱</span> Mid Up</button>
+                <button class="command-palette__btn" data-cmd="XButton1Down"><span class="command-palette__btn-icon" style="color:#fb7185">🖱</span> X1 Down</button>
+                <button class="command-palette__btn" data-cmd="XButton1Up"><span class="command-palette__btn-icon" style="color:#f43f5e">🖱</span> X1 Up</button>
+                <button class="command-palette__btn" data-cmd="XButton2Down"><span class="command-palette__btn-icon" style="color:#fb7185">🖱</span> X2 Down</button>
+                <button class="command-palette__btn" data-cmd="XButton2Up"><span class="command-palette__btn-icon" style="color:#f43f5e">🖱</span> X2 Up</button>
+                <button class="command-palette__btn" data-cmd="ScrollUp"><span class="command-palette__btn-icon" style="color:#67e8f9">↑</span> Scroll Up</button>
+                <button class="command-palette__btn" data-cmd="ScrollDown"><span class="command-palette__btn-icon" style="color:#22d3ee">↓</span> Scroll Down</button>
+                <button class="command-palette__btn" data-cmd="Delay"><span class="command-palette__btn-icon" style="color:#737e8c">⏱</span> Delay</button>
+                <button class="command-palette__btn" data-cmd="RandomDelay"><span class="command-palette__btn-icon" style="color:#737e8c">🎲</span> Rnd Delay</button>
+                <button class="command-palette__btn" data-cmd="MouseMove"><span class="command-palette__btn-icon" style="color:#22d3ee">↗</span> Mouse Move</button>
+                <button class="command-palette__btn" data-cmd="GoTo"><span class="command-palette__btn-icon" style="color:#f59e0b">→</span> Go To</button>
+                <button class="command-palette__btn" data-cmd="GoWhile"><span class="command-palette__btn-icon" style="color:#c084fc">🔁</span> Loop</button>
+                <button class="command-palette__btn" data-cmd="Comment"><span class="command-palette__btn-icon" style="color:#64748b">//</span> Comment</button>
+                <button class="command-palette__btn" data-cmd="ColorDetect"><span class="command-palette__btn-icon" style="color:#34d399">🎨</span> Color</button>
+                <button class="command-palette__btn" data-cmd="Variable"><span class="command-palette__btn-icon" style="color:#fb923c">$</span> Variable</button>
               </div>
             </div>
 
