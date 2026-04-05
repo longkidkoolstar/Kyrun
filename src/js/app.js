@@ -48,7 +48,7 @@ const state = {
   hasRobot: false,
   recordLastTime: 0,
   dragIndex: -1,
-  /** armed — global macro hotkeys only; profile-switch binds stay active when false */
+  /** armed — global macro + profile hotkeys (same toggle) */
   macroTriggers: { armed: false }
 };
 
@@ -974,12 +974,12 @@ function updateTriggersTitlebar() {
   const armed = state.macroTriggers.armed;
   if (armed) {
     dot.className = 'titlebar__status-dot titlebar__status-dot--active';
-    text.textContent = privacyActive() ? 'On' : 'Macros: On';
-    if (row) row.title = 'Global macro hotkeys are active. Profile switch keys also work.';
+    text.textContent = privacyActive() ? 'On' : 'Hotkeys: On';
+    if (row) row.title = 'Global hotkeys on: macro binds and profile switch keys (Settings).';
   } else {
     dot.className = 'titlebar__status-dot titlebar__status-dot--inactive';
-    text.textContent = privacyActive() ? 'Off' : 'Macros: Off';
-    if (row) row.title = 'Macro hotkeys are paused. Profile switch keys (Settings) still work.';
+    text.textContent = privacyActive() ? 'Off' : 'Hotkeys: Off';
+    if (row) row.title = 'Global hotkeys off: binds are unhooked so keys work normally in other apps.';
   }
 }
 function updateKeyboardViz() {
@@ -1028,6 +1028,7 @@ try {
   window.kyrun.onMacroTriggersState(data => {
     state.macroTriggers = { armed: !!data.armed };
     updateTriggersTitlebar();
+    void reloadProfileTriggers();
   });
   
   // Background macro execution from globally bound triggers
@@ -1078,7 +1079,11 @@ async function reloadProfileTriggers() {
     else await window.kyrun.unregisterHotkey(t.path);
   }
   activeTriggers = [];
-  
+
+  // When hotkeys are off, do not register globalShortcut / mouse polling — otherwise the OS still
+  // captures those keys and other apps (and games) never receive them.
+  if (!state.macroTriggers.armed) return;
+
   // Find all macros in this profile and check settings
   async function scanTree(items) {
     for (const item of items) {
@@ -1507,6 +1512,10 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
     if (cp) state.currentProfile = cp;
   } catch {}
   loadProfiles(); loadFileTree();
+  try {
+    const ts = await window.kyrun.getMacroTriggersState();
+    state.macroTriggers = { armed: ts.armed };
+  } catch {}
   // We cannot reload triggers simultaneously because it reads the same macro files we just grabbed
   setTimeout(reloadProfileTriggers, 500);
   try {
@@ -1521,10 +1530,6 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
     state.isAnonymous = await window.kyrun.getAnonymousStatus();
     const settings = await window.kyrun.getSettings();
     state.streamerMode = !!settings.streamerMode;
-  } catch {}
-  try {
-    const ts = await window.kyrun.getMacroTriggersState();
-    state.macroTriggers = { armed: ts.armed };
   } catch {}
   wireSettingsControls();
   updateStatusBar();

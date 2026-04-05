@@ -25,20 +25,11 @@ let macroAbort = false;
 let mouseTriggerInterval = null; // polling for mouse button triggers
 let mouseTriggerBindings = new Map(); // vkCode → macroId
 
-/** Global macro hotkeys only fire when true (toggle from titlebar or tray). Profile-switch binds still fire when false. */
+/** Global hotkeys (macro binds + profile-switch binds) only fire when true (titlebar or tray). */
 let macroTriggersArmed = false;
 
 function macroTriggersEffectivelyArmed() {
   return macroTriggersArmed;
-}
-
-/** Profile-switch binds should work even when macro triggers are disarmed (Listening OFF). */
-function hotkeyAllowedWhenDisarmed(id) {
-  return typeof id === 'string' && id.startsWith('!profile:');
-}
-
-function shouldFireGlobalHotkey(id) {
-  return macroTriggersEffectivelyArmed() || hotkeyAllowedWhenDisarmed(id);
 }
 
 function sendMacroTriggersState() {
@@ -217,7 +208,7 @@ function updateTrayMenu() {
     { label: 'Show Window', click: () => { mainWindow.show(); mainWindow.focus(); } },
     { type: 'separator' },
     {
-      label: `Macro binds: ${macroTriggersArmed ? 'ON' : 'OFF'}`,
+      label: `Global hotkeys: ${macroTriggersArmed ? 'ON' : 'OFF'}`,
       click: () => {
         macroTriggersArmed = !macroTriggersArmed;
         sendMacroTriggersState();
@@ -458,7 +449,7 @@ function setupIPC() {
         globalShortcut.unregister(registeredHotkeys.get(id));
       }
       globalShortcut.register(accelerator, () => {
-        if (!shouldFireGlobalHotkey(id)) return;
+        if (!macroTriggersEffectivelyArmed()) return;
         if (mainWindow) mainWindow.webContents.send('hotkey-triggered', id);
       });
       registeredHotkeys.set(id, accelerator);
@@ -579,7 +570,10 @@ function setupIPC() {
     async function runOnce(cmds) {
       for (let i = 0; i < cmds.length; i++) {
         if (macroAbort) return;
-        if (releaseVk && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+        // Skip release check before line 0: right after the hotkey fires, GetAsyncKeyState
+        // for the trigger can briefly read "up" (or mismatch bindVk), which aborted before
+        // the first command and looked like execution started on line 2. Delays still poll in sleep().
+        if (releaseVk && i > 0 && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
         const cmd = cmds[i];
         mainWindow.webContents.send('macro-line', i);
         try {
@@ -715,7 +709,7 @@ function startMouseTriggerPolling() {
       const pressed = input.isKeyDown(vkCode);
       const wasPressed = mouseButtonStates.get(vkCode) || false;
       if (pressed && !wasPressed) {
-        if (!shouldFireGlobalHotkey(macroId)) continue;
+        if (!macroTriggersEffectivelyArmed()) continue;
         if (mainWindow) mainWindow.webContents.send('hotkey-triggered', macroId);
       }
       mouseButtonStates.set(vkCode, pressed);
