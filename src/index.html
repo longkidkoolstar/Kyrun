@@ -404,6 +404,60 @@
           </div>
 
           <div class="settings-view__group">
+            <div class="settings-view__group-title">Accessibility</div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Profile switch speech</div>
+                <div class="settings-view__row-desc">Speak profile names using Windows/system TTS when switching profiles</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-profile-tts-enabled" checked>
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Speak on profile hotkeys</div>
+                <div class="settings-view__row-desc">Announce profile name when switched by a profile hotkey</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-profile-tts-hotkeys" checked>
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Speak on UI profile changes</div>
+                <div class="settings-view__row-desc">Announce profile name when switched in app controls</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-profile-tts-ui">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Speak on tray profile changes</div>
+                <div class="settings-view__row-desc">Announce profile name when switched from tray menu</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-profile-tts-tray">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Suppress speech in privacy mode</div>
+                <div class="settings-view__row-desc">Do not speak profile names while Streamer Mode or Anonymous Mode is active</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-profile-tts-suppress-privacy">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-view__group">
             <div class="settings-view__group-title">Macros</div>
             <div class="settings-view__row">
               <div>

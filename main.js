@@ -208,6 +208,16 @@ function loadSettings() {
     triggersToggleBindKey: '',
     triggersToggleBindVk: 0,
     triggersToggleBindIsMouse: false,
+    /** Speak profile name on switch. */
+    profileTtsEnabled: true,
+    /** Scope switches for profile-switch speech feedback. */
+    profileTtsScopes: {
+      hotkeys: true,
+      ui: false,
+      tray: false
+    },
+    /** Optional privacy guard for speech output. */
+    profileTtsSuppressPrivacy: false,
     ...raw
   };
 }

@@ -61,6 +61,39 @@ function privacyActive() {
   return !!(state.streamerMode || state.isAnonymous);
 }
 
+function syncProfileTtsSettingsUi() {
+  const en = $('#setting-profile-tts-enabled');
+  const hot = $('#setting-profile-tts-hotkeys');
+  const ui = $('#setting-profile-tts-ui');
+  const tray = $('#setting-profile-tts-tray');
+  const sup = $('#setting-profile-tts-suppress-privacy');
+  const disabled = !!(en && !en.checked);
+  if (hot) hot.disabled = disabled;
+  if (ui) ui.disabled = disabled;
+  if (tray) tray.disabled = disabled;
+  if (sup) sup.disabled = disabled;
+}
+
+async function speakProfileName(profileName, source) {
+  if (!profileName || !window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== 'function') return;
+  let settings;
+  try {
+    settings = await window.kyrun.getSettings();
+  } catch {
+    return;
+  }
+  if (!settings || settings.profileTtsEnabled === false) return;
+  const scope = settings.profileTtsScopes || {};
+  if (source === 'hotkeys' && !scope.hotkeys) return;
+  if (source === 'ui' && !scope.ui) return;
+  if (source === 'tray' && !scope.tray) return;
+  if (settings.profileTtsSuppressPrivacy && privacyActive()) return;
+  try {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(String(profileName)));
+  } catch {}
+}
+
 /** Hold between Down and Up when adding from the command palette or keyboard (Settings → Default Delay). */
 function getPaletteHoldDelayMs() {
   const el = $('#setting-default-delay');
@@ -230,6 +263,7 @@ async function openMacro(item) {
 
 // After capturing a new trigger key, registering globalShortcut immediately can fire the same keypress — defer reload + ignore IPC briefly.
 let suppressHotkeyTriggersUntil = 0;
+let suppressNextProfileChangedTts = false;
 function scheduleReloadProfileTriggers(delayMs = 400) {
   suppressHotkeyTriggersUntil = Date.now() + delayMs + 350;
   setTimeout(() => { void reloadProfileTriggers(); }, delayMs);
@@ -1157,7 +1191,15 @@ try {
     const row=$(`.command-row[data-index="${line}"]`);
     if(row) row.classList.add('command-row--executing');
   });
-  window.kyrun.onProfileChanged(name => { state.currentProfile=name; loadProfiles(); loadFileTree(); reloadProfileTriggers(); updateStatusBar(); });
+  window.kyrun.onProfileChanged(name => {
+    state.currentProfile = name;
+    loadProfiles(); loadFileTree(); reloadProfileTriggers(); updateStatusBar();
+    if (suppressNextProfileChangedTts) {
+      suppressNextProfileChangedTts = false;
+      return;
+    }
+    void speakProfileName(name, 'tray');
+  });
   window.kyrun.onAnonymousModeChanged(isAnon => { state.isAnonymous = !!isAnon; updateStatusBar(); });
   window.kyrun.onMacroTriggersState(data => {
     state.macroTriggers = { armed: !!data.armed };
@@ -1174,10 +1216,12 @@ try {
       const pName = macroPath.replace('!profile:', '');
       if (pName !== state.currentProfile) {
         state.currentProfile = pName;
+        suppressNextProfileChangedTts = true;
         try { await window.kyrun.switchProfile(pName); } catch {}
         loadProfiles(); loadFileTree(); reloadProfileTriggers();
         $('#editor-content').classList.add('hidden'); $('#welcome-view').classList.remove('hidden');
         updateStatusBar();
+        await speakProfileName(pName, 'hotkeys');
         showToast(privacyActive() ? 'Profile switched' : `Profile switched: ${pName}`, 'info');
       }
       return;
@@ -1353,16 +1397,19 @@ $('#modal-overlay').onclick = e=>{ if(e.target===e.currentTarget) hideModal(); }
 
 $('#profile-dropdown').onchange = async e => {
   const name = e.target.value;
+  suppressNextProfileChangedTts = true;
   try {
     await window.kyrun.switchProfile(name);
     state.currentProfile = name;
   } catch {
+    suppressNextProfileChangedTts = false;
     e.target.value = state.currentProfile;
     return;
   }
   loadFileTree(); state.currentMacro=null; state.commands=[];
   $('#editor-content').classList.add('hidden'); $('#welcome-view').classList.remove('hidden');
   updateStatusBar();
+  void speakProfileName(name, 'ui');
 };
 
 $('#btn-add-profile').onclick = ()=>showModal('New Profile','<input type="text" class="properties-panel__input" id="new-profile-name" placeholder="Profile name...">',[{label:'Cancel',type:'secondary',action:()=>{}},{label:'Create',type:'primary',action:async()=>{const n=document.getElementById('new-profile-name').value.trim();if(!n)return;try{await window.kyrun.createProfile(n);await window.kyrun.switchProfile(n);}catch{showToast('Could not create or switch profile','error');return;}showToast(`Profile "${n}" created`,'success');}}]);
@@ -1598,6 +1645,11 @@ async function loadSettingsToForm() {
     const rt = $('#setting-random-timing');
     const dd = $('#setting-default-delay');
     const cm = $('#setting-coord-mode');
+    const pte = $('#setting-profile-tts-enabled');
+    const pth = $('#setting-profile-tts-hotkeys');
+    const ptu = $('#setting-profile-tts-ui');
+    const ptt = $('#setting-profile-tts-tray');
+    const ptsp = $('#setting-profile-tts-suppress-privacy');
     if (mt) mt.checked = s.minimizeToTray !== false;
     if (sm) sm.checked = !!s.startMinimized;
     if (st) st.checked = !!s.streamerMode;
@@ -1607,7 +1659,14 @@ async function loadSettingsToForm() {
     if (rt) rt.checked = s.randomTiming !== false;
     if (dd) dd.value = s.defaultDelay != null ? s.defaultDelay : 50;
     if (cm) cm.value = s.coordinateMode || 'absolute';
+    if (pte) pte.checked = s.profileTtsEnabled !== false;
+    const scopes = s.profileTtsScopes || {};
+    if (pth) pth.checked = scopes.hotkeys !== false;
+    if (ptu) ptu.checked = !!scopes.ui;
+    if (ptt) ptt.checked = !!scopes.tray;
+    if (ptsp) ptsp.checked = !!s.profileTtsSuppressPrivacy;
     syncTriggersToggleBindUi();
+    syncProfileTtsSettingsUi();
   } catch {}
 }
 
@@ -1634,6 +1693,31 @@ function wireSettingsControls() {
   onToggle('#setting-triggers-toggle-enabled', 'triggersToggleBindEnabled', syncTriggersToggleBindUi);
   onToggle('#setting-anonymous-startup', 'anonymousOnStartup');
   onToggle('#setting-random-timing', 'randomTiming');
+
+  const pte = $('#setting-profile-tts-enabled');
+  const pth = $('#setting-profile-tts-hotkeys');
+  const ptu = $('#setting-profile-tts-ui');
+  const ptt = $('#setting-profile-tts-tray');
+  const ptsp = $('#setting-profile-tts-suppress-privacy');
+  async function saveProfileTtsSettingsFromUi() {
+    try {
+      const settings = await window.kyrun.getSettings();
+      settings.profileTtsEnabled = !!(pte && pte.checked);
+      settings.profileTtsScopes = {
+        hotkeys: !!(pth && pth.checked),
+        ui: !!(ptu && ptu.checked),
+        tray: !!(ptt && ptt.checked)
+      };
+      settings.profileTtsSuppressPrivacy = !!(ptsp && ptsp.checked);
+      await window.kyrun.saveSettings(settings);
+      syncProfileTtsSettingsUi();
+    } catch {}
+  }
+  if (pte) pte.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+  if (pth) pth.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+  if (ptu) ptu.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+  if (ptt) ptt.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+  if (ptsp) ptsp.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
 
   const ttBind = $('#setting-triggers-toggle-bind');
   if (ttBind) {
