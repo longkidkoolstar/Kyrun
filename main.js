@@ -169,7 +169,8 @@ function ensureDirectories() {
         bindKey: '',
         windowBind: '',
         holdWhilePressed: false,
-        holdBetweenPassesMs: 45
+        holdBetweenPassesMs: 45,
+        bindSecondPressStops: false
       }
     };
     fs.writeFileSync(
@@ -472,6 +473,19 @@ function generateRandomProcessName() {
   return Math.random() > 0.5 ? rand(names) : `Windows ${rand(suffixes)} (${Math.floor(Math.random() * 9000 + 1000)})`;
 }
 
+function sanitizeMacroRenameBase(name) {
+  if (!name || typeof name !== 'string') return '';
+  let s = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim();
+  s = s.replace(/\.(kyrun|amc|krm)$/i, '');
+  if (!s || s === '.' || s === '..') return '';
+  if (s.length > 100) s = s.slice(0, 100);
+  return s;
+}
+
+function win32PathsEqualInsensitive(a, b) {
+  return path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
+}
+
 // ── IPC Handlers ───────────────────────────────────────────────────
 function setupIPC() {
   // Settings
@@ -540,7 +554,7 @@ function setupIPC() {
       name: name,
       version: '1.0',
       commands: [],
-      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '', holdWhilePressed: false, holdBetweenPassesMs: 45 }
+      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '', holdWhilePressed: false, holdBetweenPassesMs: 45, bindSecondPressStops: false }
     };
     const filePath = path.join(PROFILES_DIR, profile, `${name}.kyrun`);
     fs.writeFileSync(filePath, JSON.stringify(macro, null, 2));
@@ -553,6 +567,58 @@ function setupIPC() {
       if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
       return true;
     } catch { return false; }
+  });
+
+  ipcMain.handle('rename-macro', (_, oldRelativePath, newName) => {
+    try {
+      const base = sanitizeMacroRenameBase(newName);
+      if (!base) return { ok: false, error: 'Invalid name' };
+      const profileDir = path.join(PROFILES_DIR, currentProfile);
+      const oldFull = path.isAbsolute(oldRelativePath)
+        ? oldRelativePath
+        : path.join(profileDir, oldRelativePath);
+      if (!fs.existsSync(oldFull)) return { ok: false, error: 'Not found' };
+
+      const dir = path.dirname(oldFull);
+      const ext = path.extname(oldFull) || '.kyrun';
+      const newFull = path.join(dir, base + ext);
+      const normOld = path.normalize(oldFull);
+      const normNew = path.normalize(newFull);
+
+      if (normOld === normNew) {
+        return {
+          ok: true,
+          newPath: path.relative(profileDir, oldFull),
+          displayName: path.basename(oldFull, ext)
+        };
+      }
+
+      const caseOnlyRename = process.platform === 'win32' && win32PathsEqualInsensitive(oldFull, newFull) && normOld !== normNew;
+      if (!caseOnlyRename && fs.existsSync(newFull)) return { ok: false, error: 'Exists' };
+
+      if (caseOnlyRename) {
+        const tmp = path.join(dir, `.__kyrun_rename_tmp_${Date.now()}${ext}`);
+        fs.renameSync(oldFull, tmp);
+        fs.renameSync(tmp, newFull);
+      } else {
+        fs.renameSync(oldFull, newFull);
+      }
+
+      if (ext.toLowerCase() === '.kyrun') {
+        try {
+          const raw = fs.readFileSync(newFull, 'utf8');
+          const data = JSON.parse(raw);
+          if (data && typeof data === 'object') {
+            data.name = base;
+            fs.writeFileSync(newFull, JSON.stringify(data, null, 2), 'utf8');
+          }
+        } catch (_) { /* renamed file kept */ }
+      }
+
+      return { ok: true, newPath: path.relative(profileDir, newFull), displayName: base };
+    } catch (e) {
+      return { ok: false, error: e.message || 'Rename failed' };
+    }
   });
 
   ipcMain.handle('create-folder', (_, folderPath) => {

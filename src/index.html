@@ -177,6 +177,11 @@
                 <label class="properties-panel__checkbox-label" for="hold-while-pressed">Run while trigger held</label>
               </div>
               <p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:-4px 0 8px 0;line-height:1.35">Release to stop; repeats the full sequence while the bind stays down and skips Loop commands in the list. Only when started by the trigger bind, not Play.</p>
+              <div class="properties-panel__checkbox-group">
+                <input type="checkbox" class="properties-panel__checkbox" id="bind-second-press-stops">
+                <label class="properties-panel__checkbox-label" for="bind-second-press-stops">Press bind again to stop (no restart)</label>
+              </div>
+              <p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:-4px 0 8px 0;line-height:1.35">When on, a second press of this macro’s trigger stops it and does not run it again. When off, a second press stops and immediately starts a new run (default).</p>
               <div class="properties-panel__field" id="hold-between-passes-field" style="display:none">
                 <label class="properties-panel__label">Pause between repeats (ms)</label>
                 <input type="number" class="properties-panel__input" id="hold-between-passes-ms" value="45" min="0" max="2000" title="Extra wait after each full pass before the next (reduces double inputs in games)">

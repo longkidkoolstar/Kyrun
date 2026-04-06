@@ -42,7 +42,7 @@ const state = {
   isAnonymous: false,
   streamerMode: false,
   cachedPidText: '',
-  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false, holdWhilePressed: false, holdBetweenPassesMs: 45 },
+  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false, holdWhilePressed: false, holdBetweenPassesMs: 45, bindSecondPressStops: false },
   speedMultiplier: 1.0,
   currentView: 'editor',
   hasRobot: false,
@@ -59,6 +59,16 @@ const getKeyName = c => KEY_CODE_MAP[c] || `Key${c}`;
 
 function privacyActive() {
   return !!(state.streamerMode || state.isAnonymous);
+}
+
+/** Hold between Down and Up when adding from the command palette or keyboard (Settings → Default Delay). */
+function getPaletteHoldDelayMs() {
+  const el = $('#setting-default-delay');
+  if (el && el.value !== '') {
+    const v = parseInt(el.value, 10);
+    if (!Number.isNaN(v)) return Math.max(1, v);
+  }
+  return 50;
 }
 
 /** querySelector('[data-path="..."]') breaks on paths with () or other special chars — compare in JS instead */
@@ -206,7 +216,7 @@ async function openMacro(item) {
   }
   state.currentMacro = { name: data.name||item.name, path: item.path, dirty: false };
   state.commands = data.commands || [];
-  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, holdWhilePressed:false, holdBetweenPassesMs:45, ...data.settings };
+  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, holdWhilePressed:false, holdBetweenPassesMs:45, bindSecondPressStops:false, ...data.settings };
   state.selectedIndices.clear(); state.undoStack=[]; state.redoStack=[];
   $('#welcome-view').classList.add('hidden');
   $('#settings-view').classList.remove('settings-view--visible');
@@ -243,6 +253,8 @@ function commitMacroSettingsFromUI() {
     const g = parseInt(hbg.value, 10);
     state.macroSettings.holdBetweenPassesMs = Number.isFinite(g) && g >= 0 ? Math.min(2000, g) : 0;
   }
+  const b2s = $('#bind-second-press-stops');
+  if (b2s) state.macroSettings.bindSecondPressStops = !!b2s.checked;
 }
 
 async function saveMacro(opts = {}) {
@@ -414,30 +426,51 @@ function showCommandProperties(idx) {
 }
 
 // ── Add Command ──────────────────────────────────────────────
+const MOUSE_DOWN_TO_UP = {
+  LeftDown: 'LeftUp', RightDown: 'RightUp', MiddleDown: 'MiddleUp',
+  XButton1Down: 'XButton1Up', XButton2Down: 'XButton2Up'
+};
+
 function addCommand(type) {
   if (!state.currentMacro) { showToast('Open or create a macro first', 'error'); return; }
   pushUndo();
   const insertAt = state.selectedIndices.size>0 ? Math.max(...state.selectedIndices)+1 : state.commands.length;
-  let cmd;
+  const holdMs = getPaletteHoldDelayMs();
+  let cmds;
   switch(type) {
-    case 'KeyDown': cmd={type,keyCode:65,device:1}; break;
-    case 'KeyUp': cmd={type,keyCode:65,device:1}; break;
-    case 'LeftDown': case 'LeftUp': case 'RightDown': case 'RightUp':
-    case 'MiddleDown': case 'MiddleUp':
-    case 'XButton1Down': case 'XButton1Up': case 'XButton2Down': case 'XButton2Up':
-      cmd={type}; break;
-    case 'ScrollUp': case 'ScrollDown': cmd={type,value:3}; break;
-    case 'Delay': cmd={type,value:100}; break;
-    case 'RandomDelay': cmd={type,min:50,max:150}; break;
-    case 'MouseMove': cmd={type,x:0,y:0}; break;
-    case 'GoTo': cmd={type,targetLine:1}; break;
-    case 'GoWhile': cmd={type,startLine:1,count:10}; break;
-    case 'Comment': cmd={type,value:'Comment'}; break;
-    case 'ColorDetect': cmd={type,x:0,y:0,color:'FF0000',tolerance:10}; break;
-    case 'Variable': cmd={type,varName:'var1',operation:'=',varValue:0}; break;
-    default: cmd={type}; break;
+    case 'KeyDown': {
+      const kd = { type: 'KeyDown', keyCode: 65, device: 1 };
+      cmds = [
+        { type: 'Delay', value: holdMs },
+        kd,
+        { type: 'Delay', value: holdMs },
+        { type: 'KeyUp', keyCode: 65, device: 1 }
+      ];
+      break;
+    }
+    case 'KeyUp': cmds = [{ type, keyCode: 65, device: 1 }]; break;
+    case 'LeftDown': case 'RightDown': case 'MiddleDown': case 'XButton1Down': case 'XButton2Down':
+      cmds = [
+        { type: 'Delay', value: holdMs },
+        { type },
+        { type: 'Delay', value: holdMs },
+        { type: MOUSE_DOWN_TO_UP[type] }
+      ];
+      break;
+    case 'LeftUp': case 'RightUp': case 'MiddleUp': case 'XButton1Up': case 'XButton2Up':
+      cmds = [{ type }]; break;
+    case 'ScrollUp': case 'ScrollDown': cmds = [{ type, value: 3 }]; break;
+    case 'Delay': cmds = [{ type, value: 100 }]; break;
+    case 'RandomDelay': cmds = [{ type, min: 50, max: 150 }]; break;
+    case 'MouseMove': cmds = [{ type, x: 0, y: 0 }]; break;
+    case 'GoTo': cmds = [{ type, targetLine: 1 }]; break;
+    case 'GoWhile': cmds = [{ type, startLine: 1, count: 10 }]; break;
+    case 'Comment': cmds = [{ type, value: 'Comment' }]; break;
+    case 'ColorDetect': cmds = [{ type, x: 0, y: 0, color: 'FF0000', tolerance: 10 }]; break;
+    case 'Variable': cmds = [{ type, varName: 'var1', operation: '=', varValue: 0 }]; break;
+    default: cmds = [{ type }]; break;
   }
-  state.commands.splice(insertAt,0,cmd);
+  state.commands.splice(insertAt, 0, ...cmds);
   state.currentMacro.dirty=true;
   state.selectedIndices.clear(); state.selectedIndices.add(insertAt);
   renderCommands(); showCommandProperties(insertAt);
@@ -590,17 +623,33 @@ async function waitForMacroStopped(maxMs = 15000) {
   }
 }
 
+/** Which macro file path owns the current run (bind or Play); cleared when execution ends. */
+let executionMacroPath = null;
+
+function sameMacroRelPath(a, b) {
+  if (!a || !b) return false;
+  return String(a).replace(/\\/g, '/').toLowerCase() === String(b).replace(/\\/g, '/').toLowerCase();
+}
+
 async function runMacro() {
   if (!state.currentMacro || !state.commands.length) { showToast('No macro to run','error'); return; }
   if (await window.kyrun.isMacroRunning()) {
     try { await window.kyrun.stopMacro(); } catch {}
     await waitForMacroStopped();
   }
+  const settings = { ...state.macroSettings, speedMultiplier: state.speedMultiplier, triggerFromBind: false };
+  const prevPath = executionMacroPath;
+  executionMacroPath = state.currentMacro.path;
   try {
-    const settings = { ...state.macroSettings, speedMultiplier: state.speedMultiplier, triggerFromBind: false };
     const result = await window.kyrun.executeMacro(state.commands, settings);
-    if (!result.success) showToast(result.error||'Execution failed','error');
-  } catch(e) { showToast('Input module not available','error'); }
+    if (!result.success) {
+      executionMacroPath = prevPath;
+      showToast(result.error||'Execution failed','error');
+    }
+  } catch (e) {
+    executionMacroPath = prevPath;
+    showToast('Input module not available','error');
+  }
 }
 
 async function stopMacro() {
@@ -945,9 +994,9 @@ function showCommandContextMenu(e,i) {
 function showFileContextMenu(e,item) {
   e.preventDefault();
   const m=$('#context-menu');
-  m.innerHTML=`<button class="context-menu__item" data-a="open">📂 Open</button><button class="context-menu__item" data-a="export">📤 Export</button><div class="context-menu__separator"></div><button class="context-menu__item context-menu__item--danger" data-a="del">🗑 Delete</button>`;
+  m.innerHTML=`<button class="context-menu__item" data-a="open">📂 Open</button><button class="context-menu__item" data-a="export">📤 Export</button><button class="context-menu__item" data-a="rename">✏ Rename…</button><div class="context-menu__separator"></div><button class="context-menu__item context-menu__item--danger" data-a="del">🗑 Delete</button>`;
   posCtx(m,e);
-  m.querySelectorAll('[data-a]').forEach(b=>{b.onclick=()=>{hideCtx();switch(b.dataset.a){case'open':openMacro(item);break;case'del':deleteMacroFile(item);break;case'export':exportMacro();break;}}});
+  m.querySelectorAll('[data-a]').forEach(b=>{b.onclick=()=>{hideCtx();switch(b.dataset.a){case'open':openMacro(item);break;case'del':deleteMacroFile(item);break;case'export':exportMacro();break;case'rename':renameMacroFile(item);break;}}});
 }
 function posCtx(m,e){m.classList.add('context-menu--visible');let x=e.clientX,y=e.clientY;setTimeout(()=>{const r=m.getBoundingClientRect();if(x+r.width>innerWidth)x=innerWidth-r.width-4;if(y+r.height>innerHeight)y=innerHeight-r.height-4;m.style.left=x+'px';m.style.top=y+'px';},0);}
 function hideCtx(){$('#context-menu').classList.remove('context-menu--visible');}
@@ -963,6 +1012,8 @@ function updateMacroSettings() {
   if (hbg) hbg.value = state.macroSettings.holdBetweenPassesMs ?? 45;
   syncHoldPassGapFieldVisibility();
   $('#random-delays').checked = state.macroSettings.randomDelays;
+  const b2s = $('#bind-second-press-stops');
+  if (b2s) b2s.checked = !!state.macroSettings.bindSecondPressStops;
   $('#bind-key-input').value = state.macroSettings.bindKey||'';
 }
 function syncAnonymousButtonUI() {
@@ -1040,6 +1091,42 @@ async function deleteMacroFile(item) {
   ]);
 }
 
+function renameMacroFile(item) {
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  showModal('Rename Macro', `<input type="text" class="properties-panel__input" id="rename-macro-name" value="${esc(item.name)}" placeholder="Macro name…">`, [
+    { label: 'Cancel', type: 'secondary', action: () => {} },
+    { label: 'Rename', type: 'primary', action: async () => {
+      const inp = document.getElementById('rename-macro-name');
+      const raw = (inp && inp.value || '').trim();
+      if (!raw) return;
+      const withoutExt = raw.replace(/\.(kyrun|amc|krm)$/i, '');
+      if (withoutExt === item.name) return;
+      try {
+        const res = await window.kyrun.renameMacro(item.path, raw);
+        if (!res || !res.ok) {
+          const err = res && res.error;
+          showToast(err === 'Exists' ? 'A file with that name already exists' : (err || 'Rename failed'), 'error');
+          return;
+        }
+        if (state.currentMacro && state.currentMacro.path === item.path) {
+          state.currentMacro.path = res.newPath;
+          if (res.displayName) state.currentMacro.name = res.displayName;
+          if (state.currentMacro.dirty) await saveMacro({ silent: true });
+          else await reloadProfileTriggers();
+        } else {
+          await reloadProfileTriggers();
+        }
+        await loadFileTree();
+        const hi = findFileTreeItemByPath(res.newPath);
+        if (hi) hi.classList.add('file-tree__item--active');
+        showToast('Macro renamed', 'success');
+      } catch {
+        showToast('Rename failed', 'error');
+      }
+    }}
+  ]);
+}
+
 // ── Keyboard Viz Click ───────────────────────────────────────
 $$('.keyboard-viz__key').forEach(key => {
   key.addEventListener('click', e => {
@@ -1049,7 +1136,8 @@ $$('.keyboard-viz__key').forEach(key => {
     if (!state.currentMacro) { showToast('Open or create a macro first', 'error'); return; }
     pushUndo();
     const at = state.selectedIndices.size>0?Math.max(...state.selectedIndices)+1:state.commands.length;
-    state.commands.splice(at,0,{type:'KeyDown',keyCode:kc,device:1},{type:'Delay',value:50},{type:'KeyUp',keyCode:kc,device:1});
+    const h = getPaletteHoldDelayMs();
+    state.commands.splice(at,0,{type:'Delay',value:h},{type:'KeyDown',keyCode:kc,device:1},{type:'Delay',value:h},{type:'KeyUp',keyCode:kc,device:1});
     state.currentMacro.dirty=true;
     state.selectedIndices.clear(); state.selectedIndices.add(at);
     renderCommands();
@@ -1059,7 +1147,11 @@ $$('.keyboard-viz__key').forEach(key => {
 
 // ── Event Listeners from IPC ─────────────────────────────────
 try {
-  window.kyrun.onMacroState(data => { state.isRunning=data.running; updateRunningUI(data.running); });
+  window.kyrun.onMacroState(data => {
+    state.isRunning = data.running;
+    if (!data.running) executionMacroPath = null;
+    updateRunningUI(data.running);
+  });
   window.kyrun.onMacroLine(line => {
     $$('.command-row--executing').forEach(r=>r.classList.remove('command-row--executing'));
     const row=$(`.command-row[data-index="${line}"]`);
@@ -1073,10 +1165,11 @@ try {
     void reloadProfileTriggers();
   });
   
-  // Background macro execution from globally bound triggers
-  window.kyrun.onHotkeyTriggered(async (macroPath) => {
+  // Serialize hotkey handling. Do NOT await executeMacro here — that would block the queue until the
+  // macro finishes, so a second bind press could never run to stop (toggle) or interrupt.
+  let hotkeyTriggerQueue = Promise.resolve();
+  async function handleHotkeyTrigger(macroPath) {
     if (Date.now() < suppressHotkeyTriggersUntil) return;
-    // Check if it's a profile switch trigger
     if (macroPath.startsWith('!profile:')) {
       const pName = macroPath.replace('!profile:', '');
       if (pName !== state.currentProfile) {
@@ -1090,22 +1183,40 @@ try {
       return;
     }
 
-    if (await window.kyrun.isMacroRunning()) {
-      try { await window.kyrun.stopMacro(); } catch {}
-      await waitForMacroStopped();
-    }
+    let data;
     try {
       const raw = await window.kyrun.readMacroFile(macroPath);
       if (!raw) return;
-      const data = JSON.parse(raw);
+      data = JSON.parse(raw);
       if (!data || !data.commands) return;
+    } catch { return; }
 
-      const settings = { ...data.settings, speedMultiplier: state.speedMultiplier, triggerFromBind: true };
-      const result = await window.kyrun.executeMacro(data.commands, settings);
-      if (!result.success && result.error !== 'Macro already running') {
-        showToast(result.error||'Execution failed', 'error');
-      }
-    } catch {}
+    const running = await window.kyrun.isMacroRunning();
+    const stopOnly = !!(data.settings && data.settings.bindSecondPressStops)
+      && sameMacroRelPath(executionMacroPath, macroPath);
+
+    if (running) {
+      try { await window.kyrun.stopMacro(); } catch {}
+      await waitForMacroStopped();
+      if (stopOnly) return;
+    }
+
+    const settings = { ...data.settings, speedMultiplier: state.speedMultiplier, triggerFromBind: true };
+    const prevPath = executionMacroPath;
+    executionMacroPath = macroPath;
+    window.kyrun.executeMacro(data.commands, settings)
+      .then((result) => {
+        if (!result.success) {
+          executionMacroPath = prevPath;
+          if (result.error !== 'Macro already running') {
+            showToast(result.error || 'Execution failed', 'error');
+          }
+        }
+      })
+      .catch(() => { executionMacroPath = prevPath; });
+  }
+  window.kyrun.onHotkeyTriggered((macroPath) => {
+    hotkeyTriggerQueue = hotkeyTriggerQueue.then(() => handleHotkeyTrigger(macroPath)).catch(() => {});
   });
 } catch {}
 
@@ -1323,6 +1434,13 @@ if (holdGapEl) {
   holdGapEl.onchange = ()=>{ if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
 }
 $('#random-delays').onchange = e=>{ state.macroSettings.randomDelays=e.target.checked; if(state.currentMacro){state.currentMacro.dirty=true;saveMacro({silent:true,deferTriggers:true});} };
+const bindSecondPressEl = $('#bind-second-press-stops');
+if (bindSecondPressEl) {
+  bindSecondPressEl.onchange = e => {
+    state.macroSettings.bindSecondPressStops = e.target.checked;
+    if (state.currentMacro) { state.currentMacro.dirty = true; saveMacro({ silent: true, deferTriggers: true }); }
+  };
+}
 $('#bind-key-input').onclick = function() {
   this.value = 'Press a key or mouse button...';
   const self = this;

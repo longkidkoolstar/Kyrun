@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('kyrun', {
   saveMacroFile: (path, content) => ipcRenderer.invoke('save-macro-file', path, content),
   createMacro: (name, profile) => ipcRenderer.invoke('create-macro', name, profile),
   deleteMacro: (path) => ipcRenderer.invoke('delete-macro', path),
+  renameMacro: (oldPath, newName) => ipcRenderer.invoke('rename-macro', oldPath, newName),
   createFolder: (path) => ipcRenderer.invoke('create-folder', path),
 
   // ── Import / Export ────────────────────────
