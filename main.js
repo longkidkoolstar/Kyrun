@@ -218,6 +218,8 @@ function loadSettings() {
     },
     /** Optional privacy guard for speech output. */
     profileTtsSuppressPrivacy: false,
+    /** Speak "Hotkeys enabled/disabled" when global hotkeys state changes. */
+    hotkeysTtsEnabled: true,
     ...raw
   };
 }

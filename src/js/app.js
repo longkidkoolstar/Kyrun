@@ -67,11 +67,13 @@ function syncProfileTtsSettingsUi() {
   const ui = $('#setting-profile-tts-ui');
   const tray = $('#setting-profile-tts-tray');
   const sup = $('#setting-profile-tts-suppress-privacy');
+  const hk = $('#setting-hotkeys-tts-enabled');
   const disabled = !!(en && !en.checked);
   if (hot) hot.disabled = disabled;
   if (ui) ui.disabled = disabled;
   if (tray) tray.disabled = disabled;
   if (sup) sup.disabled = disabled;
+  if (hk) hk.disabled = disabled;
 }
 
 async function speakProfileName(profileName, source) {
@@ -91,6 +93,23 @@ async function speakProfileName(profileName, source) {
   try {
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(new SpeechSynthesisUtterance(String(profileName)));
+  } catch {}
+}
+
+async function speakHotkeysState(enabled) {
+  if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== 'function') return;
+  let settings;
+  try {
+    settings = await window.kyrun.getSettings();
+  } catch {
+    return;
+  }
+  if (!settings || settings.profileTtsEnabled === false || settings.hotkeysTtsEnabled === false) return;
+  if (settings.profileTtsSuppressPrivacy && privacyActive()) return;
+  const text = enabled ? 'Hotkeys enabled' : 'Hotkeys disabled';
+  try {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
   } catch {}
 }
 
@@ -264,6 +283,7 @@ async function openMacro(item) {
 // After capturing a new trigger key, registering globalShortcut immediately can fire the same keypress — defer reload + ignore IPC briefly.
 let suppressHotkeyTriggersUntil = 0;
 let suppressNextProfileChangedTts = false;
+let hotkeysTtsReady = false;
 function scheduleReloadProfileTriggers(delayMs = 400) {
   suppressHotkeyTriggersUntil = Date.now() + delayMs + 350;
   setTimeout(() => { void reloadProfileTriggers(); }, delayMs);
@@ -1202,9 +1222,14 @@ try {
   });
   window.kyrun.onAnonymousModeChanged(isAnon => { state.isAnonymous = !!isAnon; updateStatusBar(); });
   window.kyrun.onMacroTriggersState(data => {
+    const prevArmed = !!(state.macroTriggers && state.macroTriggers.armed);
+    const nextArmed = !!data.armed;
     state.macroTriggers = { armed: !!data.armed };
     updateTriggersTitlebar();
     void reloadProfileTriggers();
+    if (hotkeysTtsReady && prevArmed !== nextArmed) {
+      void speakHotkeysState(nextArmed);
+    }
   });
   
   // Serialize hotkey handling. Do NOT await executeMacro here — that would block the queue until the
@@ -1650,6 +1675,7 @@ async function loadSettingsToForm() {
     const ptu = $('#setting-profile-tts-ui');
     const ptt = $('#setting-profile-tts-tray');
     const ptsp = $('#setting-profile-tts-suppress-privacy');
+    const hkte = $('#setting-hotkeys-tts-enabled');
     if (mt) mt.checked = s.minimizeToTray !== false;
     if (sm) sm.checked = !!s.startMinimized;
     if (st) st.checked = !!s.streamerMode;
@@ -1665,6 +1691,7 @@ async function loadSettingsToForm() {
     if (ptu) ptu.checked = !!scopes.ui;
     if (ptt) ptt.checked = !!scopes.tray;
     if (ptsp) ptsp.checked = !!s.profileTtsSuppressPrivacy;
+    if (hkte) hkte.checked = s.hotkeysTtsEnabled !== false;
     syncTriggersToggleBindUi();
     syncProfileTtsSettingsUi();
   } catch {}
@@ -1699,6 +1726,7 @@ function wireSettingsControls() {
   const ptu = $('#setting-profile-tts-ui');
   const ptt = $('#setting-profile-tts-tray');
   const ptsp = $('#setting-profile-tts-suppress-privacy');
+  const hkte = $('#setting-hotkeys-tts-enabled');
   async function saveProfileTtsSettingsFromUi() {
     try {
       const settings = await window.kyrun.getSettings();
@@ -1709,6 +1737,7 @@ function wireSettingsControls() {
         tray: !!(ptt && ptt.checked)
       };
       settings.profileTtsSuppressPrivacy = !!(ptsp && ptsp.checked);
+      settings.hotkeysTtsEnabled = !!(hkte && hkte.checked);
       await window.kyrun.saveSettings(settings);
       syncProfileTtsSettingsUi();
     } catch {}
@@ -1718,6 +1747,7 @@ function wireSettingsControls() {
   if (ptu) ptu.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
   if (ptt) ptt.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
   if (ptsp) ptsp.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+  if (hkte) hkte.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
 
   const ttBind = $('#setting-triggers-toggle-bind');
   if (ttBind) {
@@ -1860,6 +1890,7 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
     const ts = await window.kyrun.getMacroTriggersState();
     state.macroTriggers = { armed: ts.armed };
   } catch {}
+  hotkeysTtsReady = true;
   // We cannot reload triggers simultaneously because it reads the same macro files we just grabbed
   setTimeout(reloadProfileTriggers, 500);
   try {
