@@ -1472,9 +1472,25 @@ $('#bind-key-input').onclick = function() {
   function cleanup() {
     document.removeEventListener('keydown', keyH);
     document.removeEventListener('mousedown', mouseH);
+    delete self._bindKeyCaptureCleanup;
   }
+  self._bindKeyCaptureCleanup = cleanup;
   document.addEventListener('keydown', keyH);
   document.addEventListener('mousedown', mouseH);
+};
+$('#bind-key-input').oncontextmenu = function(e) {
+  e.preventDefault();
+  if (this._bindKeyCaptureCleanup) this._bindKeyCaptureCleanup();
+  if (!state.macroSettings.bindKey && !state.macroSettings.bindVk) return;
+  this.value = '';
+  state.macroSettings.bindKey = '';
+  state.macroSettings.bindVk = 0;
+  state.macroSettings.bindIsMouse = false;
+  if (state.currentMacro) {
+    state.currentMacro.dirty = true;
+    saveMacro({ silent: true, deferTriggers: true });
+  }
+  showToast('Trigger key cleared', 'info');
 };
 
 // Anonymous
