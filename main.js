@@ -950,6 +950,23 @@ function setupIPC() {
       return { x, y, pollMs, timeoutMs, deadline };
     }
 
+    function pixelConditionMatches(cmd) {
+      const expectedColor = parseHexColor(cmd.color);
+      if (!expectedColor) return false;
+      const sampledColor = input.getPixelColor(toCoord(cmd.x), toCoord(cmd.y));
+      const matched = colorsMatchWithinTolerance(sampledColor, expectedColor, cmd.tolerance);
+      return (cmd.mode || 'match') === 'notMatch' ? !matched : matched;
+    }
+
+    function getJumpToRunIfColorIndex(cmds, currentIndex) {
+      for (let i = currentIndex + 1; i < cmds.length; i++) {
+        const candidate = cmds[i];
+        if (!candidate || candidate.type !== 'RunIfColor' || !candidate.jumpOnMatch || candidate.breakpoint) continue;
+        if (pixelConditionMatches(candidate)) return i;
+      }
+      return -1;
+    }
+
     async function waitForPixelPredicate(cmd, matcher) {
       const { x, y, pollMs, timeoutMs, deadline } = getWaitCommandOptions(cmd);
 
@@ -1020,6 +1037,11 @@ function setupIPC() {
         // for the trigger can briefly read "up" (or mismatch bindVk), which aborted before
         // the first command and looked like execution started on line 2. Delays still poll in sleep().
         if (releaseVk && i > 0 && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+        const jumpToIndex = getJumpToRunIfColorIndex(cmds, i);
+        if (jumpToIndex > i) {
+          i = jumpToIndex - 1;
+          continue;
+        }
         const cmd = cmds[i];
         if (cmd && cmd.breakpoint) continue;
         mainWindow.webContents.send('macro-line', i);
@@ -1089,9 +1111,19 @@ function setupIPC() {
             }
             case 'Comment': break;
             case 'ColorDetect': {
-              const color = input.getPixelColor(toCoord(cmd.x), toCoord(cmd.y));
-              if (!colorsMatchWithinTolerance(color, cmd.color, cmd.tolerance)) {
+              if (!pixelConditionMatches(cmd)) {
                 i++;
+              }
+              break;
+            }
+            case 'RunIfColor': {
+              const matched = pixelConditionMatches(cmd);
+              if (matched && cmd.playSoundOnMatch) {
+                try { shell.beep(); } catch (_) {}
+              }
+              if (!matched) {
+                const endIndex = Math.max(i, toCoord(cmd.endLine) - 1);
+                i = endIndex;
               }
               break;
             }

@@ -660,6 +660,23 @@ html, body {
   border-left-color: var(--accent-primary);
 }
 
+.command-row--if-color-anchor {
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.18);
+}
+
+.command-row--if-color-range {
+  background: rgba(34, 197, 94, 0.06);
+  border-left-color: rgba(34, 197, 94, 0.45);
+}
+
+.command-row--if-color-range:hover {
+  background: rgba(34, 197, 94, 0.11);
+}
+
+.command-row--if-color-end {
+  box-shadow: inset 0 -1px 0 rgba(134, 239, 172, 0.28);
+}
+
 .command-row--breakpoint {
   border-left-color: var(--accent-danger);
 }
@@ -682,6 +699,20 @@ html, body {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   flex-shrink: 0;
+}
+
+.command-row__num--if-color-anchor {
+  color: var(--accent-success);
+  font-weight: 700;
+}
+
+.command-row__num--if-color-range {
+  color: #86efac;
+}
+
+.command-row__num--if-color-end {
+  color: #bbf7d0;
+  font-weight: 600;
 }
 
 .command-row__breakpoint {

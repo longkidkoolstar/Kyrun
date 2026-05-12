@@ -689,18 +689,29 @@ function renderCommands() {
     return;
   }
   if (empty) empty.classList.add('hidden');
+  const ifColorPreview = getRunIfColorPreview();
   state.commands.forEach((cmd, i) => {
     const row = document.createElement('div');
     row.className = 'command-row';
     if (state.selectedIndices.has(i)) row.classList.add('command-row--selected');
     if (cmd.breakpoint) row.classList.add('command-row--breakpoint');
+    const isIfColorAnchor = !!ifColorPreview && i === ifColorPreview.startIndex;
+    const isIfColorRange = !!ifColorPreview && i > ifColorPreview.startIndex && i <= ifColorPreview.endIndex;
+    const isIfColorEnd = isIfColorRange && i === ifColorPreview.endIndex;
+    if (isIfColorAnchor) row.classList.add('command-row--if-color-anchor');
+    if (isIfColorRange) row.classList.add('command-row--if-color-range');
+    if (isIfColorEnd) row.classList.add('command-row--if-color-end');
     row.dataset.index = i;
     row.draggable = true;
     const tc = getTypeClass(cmd.type), params = formatParams(cmd);
     const timing = cmd.type === 'Delay' ? `${cmd.value} ms`
       : cmd.type === 'RandomDelay' ? `from ${cmd.min} to ${cmd.max} ms` : '';
-    const typeShown = cmd.type === 'RandomDelay' ? 'Delay' : cmd.type;
-    row.innerHTML = `<span class="command-row__num">${i+1}</span><span class="command-row__breakpoint ${cmd.breakpoint?'command-row__breakpoint--active':''}" data-bp="${i}"></span><span class="command-row__type ${tc}">${typeShown}</span><span class="command-row__params">${params}</span><span class="command-row__delay">${timing}</span>`;
+    const typeShown = cmd.type === 'RandomDelay' ? 'Delay' : cmd.type === 'RunIfColor' ? 'If Color' : cmd.type;
+    const numClasses = ['command-row__num'];
+    if (isIfColorAnchor) numClasses.push('command-row__num--if-color-anchor');
+    if (isIfColorRange) numClasses.push('command-row__num--if-color-range');
+    if (isIfColorEnd) numClasses.push('command-row__num--if-color-end');
+    row.innerHTML = `<span class="${numClasses.join(' ')}">${i+1}</span><span class="command-row__breakpoint ${cmd.breakpoint?'command-row__breakpoint--active':''}" data-bp="${i}"></span><span class="command-row__type ${tc}">${typeShown}</span><span class="command-row__params">${params}</span><span class="command-row__delay">${timing}</span>`;
     row.onclick = e => selectCommand(i,e);
     row.ondblclick = () => showCommandProperties(i);
     row.oncontextmenu = e => showCommandContextMenu(e,i);
@@ -721,8 +732,19 @@ function renderCommands() {
   updateKeyboardViz(); updateStatusBar();
 }
 
+function getRunIfColorPreview() {
+  if (state.selectedIndices.size !== 1) return null;
+  const startIndex = [...state.selectedIndices][0];
+  const cmd = state.commands[startIndex];
+  if (!cmd || cmd.type !== 'RunIfColor') return null;
+  const rawEndLine = Number(cmd.endLine);
+  if (!Number.isFinite(rawEndLine)) return null;
+  const endIndex = Math.min(state.commands.length - 1, Math.max(startIndex, Math.round(rawEndLine) - 1));
+  return { startIndex, endIndex };
+}
+
 function getTypeClass(t) {
-  const m = { KeyDown:'command-row__type--keydown',KeyUp:'command-row__type--keyup',LeftDown:'command-row__type--mousedown',LeftUp:'command-row__type--mouseup',RightDown:'command-row__type--mousedown',RightUp:'command-row__type--mouseup',MiddleDown:'command-row__type--mousedown',MiddleUp:'command-row__type--mouseup',XButton1Down:'command-row__type--mousedown',XButton1Up:'command-row__type--mouseup',XButton2Down:'command-row__type--mousedown',XButton2Up:'command-row__type--mouseup',ScrollUp:'command-row__type--mousemove',ScrollDown:'command-row__type--mousemove',Delay:'command-row__type--delay',RandomDelay:'command-row__type--delay',GoTo:'command-row__type--goto',GoWhile:'command-row__type--loop',Comment:'command-row__type--comment',Variable:'command-row__type--variable',ColorDetect:'command-row__type--color',WaitForPixelColor:'command-row__type--color',MouseMove:'command-row__type--mousemove'};
+  const m = { KeyDown:'command-row__type--keydown',KeyUp:'command-row__type--keyup',LeftDown:'command-row__type--mousedown',LeftUp:'command-row__type--mouseup',RightDown:'command-row__type--mousedown',RightUp:'command-row__type--mouseup',MiddleDown:'command-row__type--mousedown',MiddleUp:'command-row__type--mouseup',XButton1Down:'command-row__type--mousedown',XButton1Up:'command-row__type--mouseup',XButton2Down:'command-row__type--mousedown',XButton2Up:'command-row__type--mouseup',ScrollUp:'command-row__type--mousemove',ScrollDown:'command-row__type--mousemove',Delay:'command-row__type--delay',RandomDelay:'command-row__type--delay',GoTo:'command-row__type--goto',GoWhile:'command-row__type--loop',Comment:'command-row__type--comment',Variable:'command-row__type--variable',ColorDetect:'command-row__type--color',WaitForPixelColor:'command-row__type--color',RunIfColor:'command-row__type--color',MouseMove:'command-row__type--mousemove'};
   return m[t]||'';
 }
 
@@ -741,6 +763,12 @@ function formatParams(cmd) {
     case 'GoWhile': return `Loop from line ${cmd.startLine}, ${cmd.count}×`;
     case 'Comment': return `// ${cmd.value}`;
     case 'ColorDetect': return `Check (${cmd.x},${cmd.y}) #${cmd.color}`;
+    case 'RunIfColor': {
+      const mode = cmd.mode || 'match';
+      const relation = mode === 'notMatch' ? 'is not' : 'is';
+      const jumpText = cmd.jumpOnMatch ? ' [jump on match]' : '';
+      return `Run through line ${cmd.endLine} if (${cmd.x},${cmd.y}) ${relation} #${cmd.color} <=${cmd.tolerance ?? 10}${jumpText}`;
+    }
     case 'WaitForPixelColor': {
       const mode = cmd.mode || 'match';
       const timeoutText = `(${cmd.timeoutMs ?? 1000} ms max)`;
@@ -777,6 +805,8 @@ function showCommandProperties(idx) {
   const checkboxField = (label, prop, checked = false) => `<div class="properties-panel__checkbox-group"><input type="checkbox" class="properties-panel__checkbox" data-prop="${prop}" data-idx="${idx}" ${checked ? 'checked' : ''}><label class="properties-panel__checkbox-label">${label}</label></div>`;
   const waitMode = cmd.mode || 'match';
   const waitModeField = `<div class="properties-panel__field"><label class="properties-panel__label">Wait Mode</label><select class="properties-panel__select" data-prop="mode" data-idx="${idx}" style="width:100%;margin-bottom:8px"><option value="match" ${waitMode==='match'?'selected':''}>Until this color</option><option value="notMatch" ${waitMode==='notMatch'?'selected':''}>Until not this color</option><option value="orMatch" ${waitMode==='orMatch'?'selected':''}>Until this color or this color</option><option value="transition" ${waitMode==='transition'?'selected':''}>From one color to another</option></select></div>`;
+  const ifColorMode = cmd.mode || 'match';
+  const ifColorModeField = `<div class="properties-panel__field"><label class="properties-panel__label">Condition</label><select class="properties-panel__select" data-prop="mode" data-idx="${idx}" style="width:100%;margin-bottom:8px"><option value="match" ${ifColorMode==='match'?'selected':''}>Only if this color matches</option><option value="notMatch" ${ifColorMode==='notMatch'?'selected':''}>Only if this color does not match</option></select></div>`;
   switch(cmd.type) {
     case 'KeyDown': case 'KeyUp':
       html = field('Key Code','keyCode','number') + `<div class="properties-panel__field"><label class="properties-panel__label">Key: ${getKeyName(cmd.keyCode)}</label></div>`; break;
@@ -797,6 +827,19 @@ function showCommandProperties(idx) {
     case 'ScrollUp': case 'ScrollDown': html = field('Scroll Amount','value','number'); break;
     case 'ColorDetect':
       html = field('X','x','number') + field('Y','y','number') + field('Color (hex)','color','text') + field('Tolerance','tolerance','number') + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color">🎨 Pick from Screen</button>` + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-screenshot">🖼 Pick from Screenshot</button>`;
+      break;
+    case 'RunIfColor':
+      html = ifColorModeField
+        + field('X','x','number')
+        + field('Y','y','number')
+        + field('Color (hex)','color','text')
+        + field('Tolerance','tolerance','number')
+        + field('Run Through Line','endLine','number')
+        + checkboxField('Jump straight here when the condition becomes met', 'jumpOnMatch', !!cmd.jumpOnMatch)
+        + checkboxField('Play debug sound when condition is met', 'playSoundOnMatch', !!cmd.playSoundOnMatch)
+        + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color">🎨 Pick from Screen</button>`
+        + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-screenshot">🖼 Pick from Screenshot</button>`
+        + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 0 0;line-height:1.35">Place this before a block. If the condition fails, Kyrun skips every line through the line number above. The jump toggle also lets Kyrun skip ahead to this block before it would normally reach it.</p>`;
       break;
     case 'WaitForPixelColor':
       html = waitModeField;
@@ -851,7 +894,7 @@ function showCommandProperties(idx) {
           : e.target.value;
       pushUndo();
       state.commands[i][prop]=val;
-      if (prop === 'mode') {
+      if (prop === 'mode' && state.commands[i]?.type === 'WaitForPixelColor') {
         if (val === 'transition') {
           state.commands[i].x = state.commands[i].xA ?? state.commands[i].x ?? 0;
           state.commands[i].y = state.commands[i].yA ?? state.commands[i].y ?? 0;
@@ -976,6 +1019,7 @@ function addCommand(type) {
     case 'GoWhile': cmds = [{ type, startLine: 1, count: 10 }]; break;
     case 'Comment': cmds = [{ type, value: 'Comment' }]; break;
     case 'ColorDetect': cmds = [{ type, x: 0, y: 0, color: 'FF0000', tolerance: 10 }]; break;
+    case 'RunIfColor': cmds = [{ type, mode: 'match', x: 0, y: 0, color: 'FF0000', tolerance: 10, endLine: Math.max(2, insertAt + 2), jumpOnMatch: false, playSoundOnMatch: false }]; break;
     case 'WaitForPixelColor': cmds = [{ type, mode: 'match', x: 0, y: 0, xA: 0, yA: 0, xB: 0, yB: 0, color: 'FF0000', colorA: 'FF0000', colorB: '00FF00', fromColor: 'FF0000', toColor: '00FF00', tolerance: 10, timeoutMs: 1000, pollMs: 16, playSoundOnMatch: false }]; break;
     case 'Variable': cmds = [{ type, varName: 'var1', operation: '=', varValue: 0 }]; break;
     default: cmds = [{ type }]; break;
