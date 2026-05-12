@@ -188,7 +188,31 @@ function showToast(msg, type='info') {
   setTimeout(() => { t.style.opacity='0'; setTimeout(()=>t.remove(),300); }, 3000);
 }
 
+let activeModalCleanup = null;
+function resetModalPresentation() {
+  const modal = $('#modal');
+  if (!modal) return;
+  modal.style.maxWidth = '';
+  modal.style.width = '';
+  modal.style.maxHeight = '';
+}
+function setModalPresentation(opts = {}) {
+  resetModalPresentation();
+  const modal = $('#modal');
+  if (!modal) return;
+  if (opts.maxWidth) modal.style.maxWidth = opts.maxWidth;
+  if (opts.width) modal.style.width = opts.width;
+  if (opts.maxHeight) modal.style.maxHeight = opts.maxHeight;
+}
+function setModalCleanup(fn) {
+  activeModalCleanup = typeof fn === 'function' ? fn : null;
+}
 function showModal(title, bodyHTML, buttons=[]) {
+  if (activeModalCleanup) {
+    try { activeModalCleanup(); } catch {}
+    activeModalCleanup = null;
+  }
+  resetModalPresentation();
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = bodyHTML;
   const f = $('#modal-footer'); f.innerHTML = '';
@@ -200,10 +224,329 @@ function showModal(title, bodyHTML, buttons=[]) {
     f.appendChild(btn);
   });
   $('#modal-overlay').classList.add('modal-overlay--visible');
-  // Auto-focus first input
   setTimeout(() => { const inp = $('#modal-body input'); if(inp) inp.focus(); }, 100);
 }
-function hideModal() { $('#modal-overlay').classList.remove('modal-overlay--visible'); }
+function hideModal() {
+  const cleanup = activeModalCleanup;
+  activeModalCleanup = null;
+  if (cleanup) {
+    try { cleanup(); } catch {}
+  }
+  resetModalPresentation();
+  $('#modal-overlay').classList.remove('modal-overlay--visible');
+}
+
+const SCREEN_PICK_MOUSE_NAMES = { 1:'Middle Mouse', 2:'Right Mouse', 3:'Mouse X1 (Side)', 4:'Mouse X2 (Side)' };
+const SCREEN_PICK_MOUSE_VK_CODES = { 1:4, 2:2, 3:5, 4:6 };
+const SCREEN_PICK_MOUSE_DOWN_TYPES = { 2:'RightDown', 4:'MiddleDown', 5:'XButton1Down', 6:'XButton2Down' };
+let activeScreenCaptureSession = null;
+
+function getMouseBindInfo(button) {
+  const vk = SCREEN_PICK_MOUSE_VK_CODES[button];
+  if (!vk) return null;
+  return { label: SCREEN_PICK_MOUSE_NAMES[button] || `Mouse ${button}`, vk, isMouse: true };
+}
+
+function screenCaptureEventMatchesBind(data, bind) {
+  if (!bind) return false;
+  if (bind.isMouse) return data.kind === 'mouse' && data.cmdType === SCREEN_PICK_MOUSE_DOWN_TYPES[bind.vk];
+  if (bind.vk === 27 && data.kind === 'stop') return true;
+  return data.kind === 'key' && data.cmdType === 'down' && data.keyCode === bind.vk;
+}
+
+async function applyCommandScreenTarget(idx, updates, message, type = 'success') {
+  const cmd = state.commands[idx];
+  if (!cmd || !state.currentMacro) { showToast('Capture target is no longer available', 'error'); return false; }
+  pushUndo();
+  Object.assign(cmd, updates);
+  state.currentMacro.dirty = true;
+  state.selectedIndices.clear();
+  state.selectedIndices.add(idx);
+  renderCommands();
+  showCommandProperties(idx);
+  if (message) showToast(message, type);
+  return true;
+}
+
+function buildScreenTargetUpdates(x, y, opts = {}) {
+  const xProp = opts.xProp || 'x';
+  const yProp = opts.yProp || 'y';
+  return { [xProp]: x, [yProp]: y };
+}
+
+async function captureCurrentScreenSample(idx, opts = {}) {
+  try {
+    const pos = await window.kyrun.getMousePosition();
+    const updates = buildScreenTargetUpdates(pos.x, pos.y, opts);
+    let message = `Captured ${pos.x}, ${pos.y}`;
+    if (opts.captureColor) {
+      const colorProp = opts.colorProp || 'color';
+      const color = await window.kyrun.getPixelColor(pos.x, pos.y);
+      updates[colorProp] = color;
+      const label = opts.colorLabel || 'color';
+      message = `Captured ${label} #${color} at ${pos.x}, ${pos.y}`;
+    }
+    await applyCommandScreenTarget(idx, updates, message);
+  } catch {
+    showToast('Screen capture failed', 'error');
+  }
+}
+
+function openFrozenScreenshotPicker(idx, capture, opts = {}) {
+  if (!capture || !capture.imageDataUrl) { showToast('Screenshot capture failed', 'error'); return; }
+  const subject = opts.captureColor ? `${opts.colorLabel || 'color'} and coordinates` : 'coordinates';
+  showModal(
+    'Pick from Screenshot',
+    `<div class="screen-picker">
+      <p class="screen-picker__hint">This is a frozen frame from ${capture.displayName || 'the display'}. Click the exact pixel you want to use for ${subject}.</p>
+      <div class="screen-picker__meta">
+        <div><strong>Hover:</strong> <span id="screen-picker-hover">Move over the image</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><strong>Color:</strong> <span class="screen-picker__swatch" id="screen-picker-swatch"></span> <code id="screen-picker-color">------</code></div>
+      </div>
+      <div class="screen-picker__viewport">
+        <img id="screen-picker-image" class="screen-picker__image" src="${capture.imageDataUrl}" alt="Captured screen frame" draggable="false">
+      </div>
+    </div>`,
+    [{ label: 'Cancel', type: 'secondary', action: () => {} }]
+  );
+  setModalPresentation({ width: 'min(96vw, 1100px)', maxWidth: 'min(96vw, 1100px)', maxHeight: '92vh' });
+
+  setTimeout(() => {
+    const img = document.getElementById('screen-picker-image');
+    const hover = document.getElementById('screen-picker-hover');
+    const swatch = document.getElementById('screen-picker-swatch');
+    const colorText = document.getElementById('screen-picker-color');
+    if (!img || !hover || !swatch || !colorText) return;
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let imageReady = false;
+    const bounds = capture.physicalBounds || { x: 0, y: 0, width: capture.imageWidth || 1, height: capture.imageHeight || 1 };
+
+    const paintImage = () => {
+      if (!ctx || !img.naturalWidth || !img.naturalHeight) return;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight);
+      imageReady = true;
+    };
+
+    const sampleFromEvent = e => {
+      if (!imageReady || !ctx) return null;
+      const rect = img.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const relX = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+      const pixelX = Math.min(img.naturalWidth - 1, Math.max(0, Math.floor(relX * img.naturalWidth)));
+      const pixelY = Math.min(img.naturalHeight - 1, Math.max(0, Math.floor(relY * img.naturalHeight)));
+      const [r, g, b] = ctx.getImageData(pixelX, pixelY, 1, 1).data;
+      const hex = [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('').toUpperCase();
+      const screenX = bounds.x + Math.min(Math.max(bounds.width - 1, 0), Math.max(0, Math.floor((pixelX / Math.max(1, img.naturalWidth)) * bounds.width)));
+      const screenY = bounds.y + Math.min(Math.max(bounds.height - 1, 0), Math.max(0, Math.floor((pixelY / Math.max(1, img.naturalHeight)) * bounds.height)));
+      return { pixelX, pixelY, screenX, screenY, hex };
+    };
+
+    const updatePreview = e => {
+      const sample = sampleFromEvent(e);
+      if (!sample) return;
+      hover.textContent = `Image ${sample.pixelX}, ${sample.pixelY} -> Screen ${sample.screenX}, ${sample.screenY}`;
+      swatch.style.background = `#${sample.hex}`;
+      colorText.textContent = `#${sample.hex}`;
+    };
+
+    const onClick = async e => {
+      const sample = sampleFromEvent(e);
+      if (!sample) return;
+      hideModal();
+      const updates = buildScreenTargetUpdates(sample.screenX, sample.screenY, opts);
+      let message = `Captured ${sample.screenX}, ${sample.screenY} from screenshot`;
+      if (opts.captureColor) {
+        updates[opts.colorProp || 'color'] = sample.hex;
+        message = `Captured ${opts.colorLabel || 'color'} #${sample.hex} at ${sample.screenX}, ${sample.screenY} from screenshot`;
+      }
+      await applyCommandScreenTarget(idx, updates, message);
+    };
+
+    const cleanup = () => {
+      img.removeEventListener('mousemove', updatePreview);
+      img.removeEventListener('click', onClick);
+      img.removeEventListener('load', paintImage);
+    };
+    setModalCleanup(cleanup);
+
+    img.addEventListener('mousemove', updatePreview);
+    img.addEventListener('click', onClick);
+    img.addEventListener('load', paintImage);
+    if (img.complete) paintImage();
+  }, 0);
+}
+
+function stopArmedScreenCapture(opts = {}) {
+  const session = activeScreenCaptureSession;
+  if (!session) return;
+  activeScreenCaptureSession = null;
+  if (session.timeoutId) clearTimeout(session.timeoutId);
+  if (session.unsubscribe) session.unsubscribe();
+  if (session.cancelFocusedKey) document.removeEventListener('keydown', session.cancelFocusedKey, true);
+  try { if (window.kyrun.stopGlobalRecordCapture) window.kyrun.stopGlobalRecordCapture(); } catch {}
+  if (opts.message) showToast(opts.message, opts.type || 'info');
+}
+
+async function startArmedScreenCapture(idx, opts = {}) {
+  if (!state.currentMacro || !state.commands[idx]) { showToast('Open a macro first', 'error'); return; }
+  if (state.isRecording) { showToast('Stop recording before arming capture', 'info'); return; }
+  if (!state.hasRobot || !window.kyrun.onRecordCapture || !window.kyrun.startGlobalRecordCapture) {
+    showToast('Global hotkey capture is unavailable on this setup', 'error');
+    return;
+  }
+  if (!opts.bind || !opts.bind.vk) { showToast('Choose a capture bind first', 'error'); return; }
+
+  stopArmedScreenCapture();
+  const startedAt = Date.now();
+  const timeoutMs = 30000;
+  suppressHotkeyTriggersUntil = Math.max(suppressHotkeyTriggersUntil, startedAt + timeoutMs + 500);
+
+  const cancelFocusedKey = e => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    stopArmedScreenCapture({ message: 'Hotkey capture cancelled', type: 'info' });
+  };
+  document.addEventListener('keydown', cancelFocusedKey, true);
+
+  const finishCapture = async () => {
+    stopArmedScreenCapture();
+    try {
+      if (opts.captureMode === 'screenshot') {
+        const capture = await window.kyrun.captureScreenFrame();
+        if (!capture || capture.success === false) {
+          showToast(capture?.error || 'Screenshot capture failed', 'error');
+          return;
+        }
+        try { if (window.kyrun.focusWindow) window.kyrun.focusWindow(); } catch {}
+        setTimeout(() => openFrozenScreenshotPicker(idx, capture, opts), 120);
+        return;
+      }
+
+      const pos = await window.kyrun.getMousePosition();
+      const updates = buildScreenTargetUpdates(pos.x, pos.y, opts);
+      let message = `Captured ${pos.x}, ${pos.y} via ${opts.bind.label}`;
+      if (opts.captureColor) {
+        const colorProp = opts.colorProp || 'color';
+        const color = await window.kyrun.getPixelColor(pos.x, pos.y);
+        updates[colorProp] = color;
+        const label = opts.colorLabel || 'color';
+        message = `Captured ${label} #${color} at ${pos.x}, ${pos.y} via ${opts.bind.label}`;
+      }
+      await applyCommandScreenTarget(idx, updates, message);
+    } catch {
+      showToast(opts.captureMode === 'screenshot' ? 'Screenshot capture failed' : 'Hotkey capture failed', 'error');
+    }
+  };
+
+  const unsubscribe = window.kyrun.onRecordCapture(data => {
+    if (!activeScreenCaptureSession || activeScreenCaptureSession.startedAt !== startedAt) return;
+    if (Date.now() - startedAt < 250) return;
+    if (!screenCaptureEventMatchesBind(data, opts.bind)) return;
+    void finishCapture();
+  });
+
+  const timeoutId = setTimeout(() => {
+    stopArmedScreenCapture({ message: 'Hotkey capture timed out', type: 'info' });
+  }, timeoutMs);
+
+  activeScreenCaptureSession = { startedAt, timeoutId, unsubscribe, cancelFocusedKey };
+  const result = await window.kyrun.startGlobalRecordCapture();
+  if (!result || result.success === false) {
+    stopArmedScreenCapture();
+    showToast('Global hotkey capture is unavailable on this setup', 'error');
+    return;
+  }
+  const subject = opts.captureMode === 'screenshot'
+    ? 'freeze a screenshot and open the picker'
+    : (opts.captureColor ? `${opts.colorLabel || 'color'} and position` : 'position');
+  showToast(`Capture armed. Switch to the game and press ${opts.bind.label} to ${subject}.`, 'info');
+}
+
+function openArmedScreenCaptureSetup(idx, opts = {}) {
+  if (!state.currentMacro || !state.commands[idx]) { showToast('Open a macro first', 'error'); return; }
+  if (state.isRecording) { showToast('Stop recording before arming capture', 'info'); return; }
+  if (!state.hasRobot || !window.kyrun.onRecordCapture || !window.kyrun.startGlobalRecordCapture) {
+    showToast('Global hotkey capture is unavailable on this setup', 'error');
+    return;
+  }
+  if (activeScreenCaptureSession) stopArmedScreenCapture({ message: 'Previous hotkey capture cancelled', type: 'info' });
+
+  let bind = null;
+  const subject = opts.captureMode === 'screenshot'
+    ? 'freeze the current game frame and open a clickable screenshot picker'
+    : `capture the current cursor ${opts.captureColor ? `${opts.colorLabel || 'color'} and position` : 'position'}`;
+  showModal(
+    'Arm Screen Capture',
+    `<div style="display:flex;flex-direction:column;gap:10px">
+      <p style="margin:0;color:var(--text-secondary);font-size:12px;line-height:1.45">Choose a temporary capture bind, switch to the game, then press it to ${subject}.</p>
+      <input type="text" class="properties-panel__input" id="screen-capture-bind-input" placeholder="Click to choose a key or mouse button..." readonly title="Left-click to bind · Right-click to clear">
+      <p style="margin:0;color:var(--text-tertiary);font-size:11px;line-height:1.35">Right-click the field to clear. Press Escape while Kyrun is focused to cancel an armed capture.</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button type="button" class="btn btn--secondary" id="screen-capture-cancel">Cancel</button>
+        <button type="button" class="btn btn--primary" id="screen-capture-arm">Arm Capture</button>
+      </div>
+    </div>`,
+    []
+  );
+
+  setTimeout(() => {
+    const input = document.getElementById('screen-capture-bind-input');
+    const armBtn = document.getElementById('screen-capture-arm');
+    const cancelBtn = document.getElementById('screen-capture-cancel');
+    if (!input || !armBtn || !cancelBtn) return;
+
+    const cleanupBindCapture = () => {
+      document.removeEventListener('keydown', keyH);
+      document.removeEventListener('mousedown', mouseH);
+    };
+    setModalCleanup(cleanupBindCapture);
+
+    const keyH = e => {
+      e.preventDefault();
+      bind = { label: keyEventToBindLabel(e), vk: e.keyCode, isMouse: false };
+      input.value = bind.label;
+      cleanupBindCapture();
+    };
+    const mouseH = e => {
+      if (e.button === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      bind = getMouseBindInfo(e.button);
+      if (!bind) return;
+      input.value = bind.label;
+      cleanupBindCapture();
+    };
+
+    input.onclick = () => {
+      input.value = 'Press a key or mouse button...';
+      cleanupBindCapture();
+      document.addEventListener('keydown', keyH);
+      document.addEventListener('mousedown', mouseH);
+    };
+    input.oncontextmenu = e => {
+      e.preventDefault();
+      bind = null;
+      input.value = '';
+      cleanupBindCapture();
+    };
+    armBtn.onclick = async () => {
+      if (!bind) { showToast('Choose a capture bind first', 'error'); return; }
+      cleanupBindCapture();
+      hideModal();
+      await startArmedScreenCapture(idx, { ...opts, bind });
+    };
+    cancelBtn.onclick = () => {
+      cleanupBindCapture();
+      hideModal();
+    };
+  }, 0);
+}
 
 // ── Profiles ─────────────────────────────────────────────────
 async function loadProfiles() {
@@ -379,7 +722,7 @@ function renderCommands() {
 }
 
 function getTypeClass(t) {
-  const m = { KeyDown:'command-row__type--keydown',KeyUp:'command-row__type--keyup',LeftDown:'command-row__type--mousedown',LeftUp:'command-row__type--mouseup',RightDown:'command-row__type--mousedown',RightUp:'command-row__type--mouseup',MiddleDown:'command-row__type--mousedown',MiddleUp:'command-row__type--mouseup',XButton1Down:'command-row__type--mousedown',XButton1Up:'command-row__type--mouseup',XButton2Down:'command-row__type--mousedown',XButton2Up:'command-row__type--mouseup',ScrollUp:'command-row__type--mousemove',ScrollDown:'command-row__type--mousemove',Delay:'command-row__type--delay',RandomDelay:'command-row__type--delay',GoTo:'command-row__type--goto',GoWhile:'command-row__type--loop',Comment:'command-row__type--comment',Variable:'command-row__type--variable',ColorDetect:'command-row__type--color',MouseMove:'command-row__type--mousemove'};
+  const m = { KeyDown:'command-row__type--keydown',KeyUp:'command-row__type--keyup',LeftDown:'command-row__type--mousedown',LeftUp:'command-row__type--mouseup',RightDown:'command-row__type--mousedown',RightUp:'command-row__type--mouseup',MiddleDown:'command-row__type--mousedown',MiddleUp:'command-row__type--mouseup',XButton1Down:'command-row__type--mousedown',XButton1Up:'command-row__type--mouseup',XButton2Down:'command-row__type--mousedown',XButton2Up:'command-row__type--mouseup',ScrollUp:'command-row__type--mousemove',ScrollDown:'command-row__type--mousemove',Delay:'command-row__type--delay',RandomDelay:'command-row__type--delay',GoTo:'command-row__type--goto',GoWhile:'command-row__type--loop',Comment:'command-row__type--comment',Variable:'command-row__type--variable',ColorDetect:'command-row__type--color',WaitForPixelColor:'command-row__type--color',MouseMove:'command-row__type--mousemove'};
   return m[t]||'';
 }
 
@@ -396,7 +739,22 @@ function formatParams(cmd) {
     case 'RandomDelay': return `Wait from ${cmd.min} to ${cmd.max} ms`;
     case 'MouseMove': return `Move to (${cmd.x}, ${cmd.y})`; case 'GoTo': return `Jump to line ${cmd.targetLine}`;
     case 'GoWhile': return `Loop from line ${cmd.startLine}, ${cmd.count}×`;
-    case 'Comment': return `// ${cmd.value}`; case 'ColorDetect': return `Check (${cmd.x},${cmd.y}) #${cmd.color}`;
+    case 'Comment': return `// ${cmd.value}`;
+    case 'ColorDetect': return `Check (${cmd.x},${cmd.y}) #${cmd.color}`;
+    case 'WaitForPixelColor': {
+      const mode = cmd.mode || 'match';
+      const timeoutText = `(${cmd.timeoutMs ?? 1000} ms max)`;
+      if (mode === 'notMatch') return `Wait until (${cmd.x},${cmd.y}) is not #${cmd.color} <=${cmd.tolerance ?? 10} ${timeoutText}`;
+      if (mode === 'orMatch') {
+        const xA = cmd.xA ?? cmd.x ?? 0;
+        const yA = cmd.yA ?? cmd.y ?? 0;
+        const xB = cmd.xB ?? cmd.x ?? 0;
+        const yB = cmd.yB ?? cmd.y ?? 0;
+        return `Wait for A (${xA},${yA}) #${cmd.colorA || cmd.color || 'FF0000'} or B (${xB},${yB}) #${cmd.colorB || '00FF00'} <=${cmd.tolerance ?? 10} ${timeoutText}`;
+      }
+      if (mode === 'transition') return `Wait for (${cmd.x},${cmd.y}) #${cmd.fromColor} -> #${cmd.toColor} <=${cmd.tolerance ?? 10} ${timeoutText}`;
+      return `Wait for (${cmd.x},${cmd.y}) #${cmd.color} <=${cmd.tolerance ?? 10} ${timeoutText}`;
+    }
     case 'Variable': return `${cmd.varName} ${cmd.operation} ${cmd.varValue}`;
     default: return JSON.stringify(cmd);
   }
@@ -416,6 +774,9 @@ function showCommandProperties(idx) {
   panel.classList.remove('hidden');
   let html = '';
   const field = (label,prop,type='number',val) => `<div class="properties-panel__field"><label class="properties-panel__label">${label}</label><input type="${type}" class="properties-panel__input" value="${val!==undefined?val:cmd[prop]}" data-prop="${prop}" data-idx="${idx}" ${type==='number'?'min="0"':''}></div>`;
+  const checkboxField = (label, prop, checked = false) => `<div class="properties-panel__checkbox-group"><input type="checkbox" class="properties-panel__checkbox" data-prop="${prop}" data-idx="${idx}" ${checked ? 'checked' : ''}><label class="properties-panel__checkbox-label">${label}</label></div>`;
+  const waitMode = cmd.mode || 'match';
+  const waitModeField = `<div class="properties-panel__field"><label class="properties-panel__label">Wait Mode</label><select class="properties-panel__select" data-prop="mode" data-idx="${idx}" style="width:100%;margin-bottom:8px"><option value="match" ${waitMode==='match'?'selected':''}>Until this color</option><option value="notMatch" ${waitMode==='notMatch'?'selected':''}>Until not this color</option><option value="orMatch" ${waitMode==='orMatch'?'selected':''}>Until this color or this color</option><option value="transition" ${waitMode==='transition'?'selected':''}>From one color to another</option></select></div>`;
   switch(cmd.type) {
     case 'KeyDown': case 'KeyUp':
       html = field('Key Code','keyCode','number') + `<div class="properties-panel__field"><label class="properties-panel__label">Key: ${getKeyName(cmd.keyCode)}</label></div>`; break;
@@ -429,12 +790,53 @@ function showCommandProperties(idx) {
       html += `<div id="delay-fields-random" style="display:${isR ? 'block' : 'none'}">${field('Min (ms)','min','number', mn)}${field('Max (ms)','max','number', mx)}</div>`;
       break;
     }
-    case 'MouseMove': html = field('X','x','number') + field('Y','y','number') + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-coords">📍 Pick from Screen</button>`; break;
+    case 'MouseMove': html = field('X','x','number') + field('Y','y','number') + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-coords">📍 Pick from Screen</button>` + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-coords-screenshot">🖼 Pick from Screenshot</button>`; break;
     case 'GoTo': html = field('Target Line','targetLine','number'); break;
     case 'GoWhile': html = field('Start Line','startLine','number') + field('Loop Count','count','number'); break;
     case 'Comment': html = field('Comment','value','text'); break;
     case 'ScrollUp': case 'ScrollDown': html = field('Scroll Amount','value','number'); break;
-    case 'ColorDetect': html = field('X','x','number') + field('Y','y','number') + field('Color (hex)','color','text') + field('Tolerance','tolerance','number') + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color">🎨 Pick from Screen</button>`; break;
+    case 'ColorDetect':
+      html = field('X','x','number') + field('Y','y','number') + field('Color (hex)','color','text') + field('Tolerance','tolerance','number') + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color">🎨 Pick from Screen</button>` + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-screenshot">🖼 Pick from Screenshot</button>`;
+      break;
+    case 'WaitForPixelColor':
+      html = waitModeField;
+      if (waitMode === 'transition') {
+        html += field('X','x','number') + field('Y','y','number');
+        html += field('From Color (hex)','fromColor','text', cmd.fromColor || 'FF0000')
+          + field('To Color (hex)','toColor','text', cmd.toColor || '00FF00')
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-from-color">🎨 Pick "From" Color</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-from-color-screenshot">🖼 Pick "From" from Screenshot</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-to-color">🎨 Pick "To" Color</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-to-color-screenshot">🖼 Pick "To" from Screenshot</button>`
+          + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 8px 0;line-height:1.35">This waits until the pixel first becomes the From color, then later becomes the To color.</p>`;
+      } else if (waitMode === 'orMatch') {
+        html += field('Position A X','xA','number', cmd.xA ?? cmd.x ?? 0)
+          + field('Position A Y','yA','number', cmd.yA ?? cmd.y ?? 0)
+          + field('Color A (hex)','colorA','text', cmd.colorA || cmd.color || 'FF0000')
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-a">📍 Pick Position A</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-a-screenshot">🖼 Pick Pos A from Screenshot</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-a">🎨 Pick Color A</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-a-screenshot">🖼 Pick Color A from Screenshot</button>`
+          + field('Position B X','xB','number', cmd.xB ?? cmd.x ?? 0)
+          + field('Position B Y','yB','number', cmd.yB ?? cmd.y ?? 0)
+          + field('Color B (hex)','colorB','text', cmd.colorB || '00FF00')
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-b">📍 Pick Position B</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-b-screenshot">🖼 Pick Pos B from Screenshot</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-b">🎨 Pick Color B</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-b-screenshot">🖼 Pick Color B from Screenshot</button>`
+          + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 8px 0;line-height:1.35">This waits until the pixel at Position A matches Color A OR the pixel at Position B matches Color B.</p>`;
+      } else {
+        html += field('X','x','number') + field('Y','y','number')
+          + field('Color (hex)','color','text')
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color">🎨 Pick from Screen</button>`
+          + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-screenshot">🖼 Pick from Screenshot</button>`;
+      }
+      html += field('Tolerance','tolerance','number')
+        + field('Timeout (ms)','timeoutMs','number')
+        + field('Poll Every (ms)','pollMs','number')
+        + checkboxField('Play debug sound when condition is met', 'playSoundOnMatch', !!cmd.playSoundOnMatch)
+        + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 0 0;line-height:1.35">Pick from Screenshot freezes the current game frame and lets you click the exact pixel without opening the in-game menu first.</p>`;
+      break;
     case 'Variable': html = field('Name','varName','text') + `<select class="properties-panel__select" data-prop="operation" data-idx="${idx}" style="width:100%;margin-bottom:8px"><option ${cmd.operation==='='?'selected':''} value="=">=</option><option ${cmd.operation==='+='?'selected':''} value="+=">+=</option><option ${cmd.operation==='-='?'selected':''} value="-=">-=</option></select>` + field('Value','varValue','number'); break;
     default: html = `<p style="color:var(--text-tertiary);font-size:12px;">No editable properties</p>`;
   }
@@ -442,8 +844,35 @@ function showCommandProperties(idx) {
   content.querySelectorAll('input[data-prop],select[data-prop]').forEach(inp => {
     inp.addEventListener('change', e => {
       const i=parseInt(e.target.dataset.idx,10), prop=e.target.dataset.prop;
-      const val = e.target.type==='number'?parseInt(e.target.value,10):e.target.value;
-      pushUndo(); state.commands[i][prop]=val; state.currentMacro.dirty=true; renderCommands(); showCommandProperties(i);
+      const val = e.target.type==='number'
+        ? parseInt(e.target.value,10)
+        : e.target.type==='checkbox'
+          ? !!e.target.checked
+          : e.target.value;
+      pushUndo();
+      state.commands[i][prop]=val;
+      if (prop === 'mode') {
+        if (val === 'transition') {
+          state.commands[i].x = state.commands[i].xA ?? state.commands[i].x ?? 0;
+          state.commands[i].y = state.commands[i].yA ?? state.commands[i].y ?? 0;
+          if (!state.commands[i].fromColor) state.commands[i].fromColor = state.commands[i].color || 'FF0000';
+          if (!state.commands[i].toColor) state.commands[i].toColor = '00FF00';
+        } else if (val === 'orMatch') {
+          if (state.commands[i].xA === undefined) state.commands[i].xA = state.commands[i].x ?? 0;
+          if (state.commands[i].yA === undefined) state.commands[i].yA = state.commands[i].y ?? 0;
+          if (state.commands[i].xB === undefined) state.commands[i].xB = state.commands[i].x ?? 0;
+          if (state.commands[i].yB === undefined) state.commands[i].yB = state.commands[i].y ?? 0;
+          if (!state.commands[i].colorA) state.commands[i].colorA = state.commands[i].color || state.commands[i].fromColor || 'FF0000';
+          if (!state.commands[i].colorB) state.commands[i].colorB = state.commands[i].toColor || '00FF00';
+        } else {
+          state.commands[i].x = state.commands[i].xA ?? state.commands[i].x ?? 0;
+          state.commands[i].y = state.commands[i].yA ?? state.commands[i].y ?? 0;
+          if (!state.commands[i].color) {
+            state.commands[i].color = state.commands[i].colorA || state.commands[i].toColor || state.commands[i].fromColor || 'FF0000';
+          }
+        }
+      }
+      state.currentMacro.dirty=true; renderCommands(); showCommandProperties(i);
     });
   });
   const delayRandToggle = document.getElementById('delay-random-toggle');
@@ -470,13 +899,39 @@ function showCommandProperties(idx) {
   // Coordinate picker
   const pickBtn = document.getElementById('btn-pick-coords');
   if (pickBtn) pickBtn.onclick = async () => {
-    try { const pos = await window.kyrun.getMousePosition(); pushUndo(); state.commands[idx].x=pos.x; state.commands[idx].y=pos.y; state.currentMacro.dirty=true; renderCommands(); showCommandProperties(idx); showToast(`Coords: ${pos.x}, ${pos.y}`,'success'); } catch {}
+    await captureCurrentScreenSample(idx, { captureColor: false });
   };
+  const pickScreenshotBtn = document.getElementById('btn-pick-coords-screenshot');
+  if (pickScreenshotBtn) pickScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: false, captureMode: 'screenshot' });
   // Color picker
   const colorBtn = document.getElementById('btn-pick-color');
-  if (colorBtn) colorBtn.onclick = async () => {
-    try { const pos = await window.kyrun.getMousePosition(); const col = await window.kyrun.getPixelColor(pos.x,pos.y); pushUndo(); state.commands[idx].x=pos.x; state.commands[idx].y=pos.y; state.commands[idx].color=col; state.currentMacro.dirty=true; renderCommands(); showCommandProperties(idx); showToast(`Color: #${col} at ${pos.x},${pos.y}`,'success'); } catch {}
-  };
+  if (colorBtn) colorBtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: true, colorProp: 'color', colorLabel: 'color' }); };
+  const colorScreenshotBtn = document.getElementById('btn-pick-color-screenshot');
+  if (colorScreenshotBtn) colorScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: true, colorProp: 'color', colorLabel: 'color', captureMode: 'screenshot' });
+  const fromColorBtn = document.getElementById('btn-pick-from-color');
+  if (fromColorBtn) fromColorBtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: true, colorProp: 'fromColor', colorLabel: 'from color' }); };
+  const fromColorScreenshotBtn = document.getElementById('btn-pick-from-color-screenshot');
+  if (fromColorScreenshotBtn) fromColorScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: true, colorProp: 'fromColor', colorLabel: 'from color', captureMode: 'screenshot' });
+  const toColorBtn = document.getElementById('btn-pick-to-color');
+  if (toColorBtn) toColorBtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: true, colorProp: 'toColor', colorLabel: 'to color' }); };
+  const toColorScreenshotBtn = document.getElementById('btn-pick-to-color-screenshot');
+  if (toColorScreenshotBtn) toColorScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: true, colorProp: 'toColor', colorLabel: 'to color', captureMode: 'screenshot' });
+  const posABtn = document.getElementById('btn-pick-pos-a');
+  if (posABtn) posABtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: false, xProp: 'xA', yProp: 'yA' }); };
+  const posAScreenshotBtn = document.getElementById('btn-pick-pos-a-screenshot');
+  if (posAScreenshotBtn) posAScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: false, xProp: 'xA', yProp: 'yA', captureMode: 'screenshot' });
+  const colorABtn = document.getElementById('btn-pick-color-a');
+  if (colorABtn) colorABtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: true, xProp: 'xA', yProp: 'yA', colorProp: 'colorA', colorLabel: 'color A' }); };
+  const colorAScreenshotBtn = document.getElementById('btn-pick-color-a-screenshot');
+  if (colorAScreenshotBtn) colorAScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: true, xProp: 'xA', yProp: 'yA', colorProp: 'colorA', colorLabel: 'color A', captureMode: 'screenshot' });
+  const posBBtn = document.getElementById('btn-pick-pos-b');
+  if (posBBtn) posBBtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: false, xProp: 'xB', yProp: 'yB' }); };
+  const posBScreenshotBtn = document.getElementById('btn-pick-pos-b-screenshot');
+  if (posBScreenshotBtn) posBScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: false, xProp: 'xB', yProp: 'yB', captureMode: 'screenshot' });
+  const colorBBtn = document.getElementById('btn-pick-color-b');
+  if (colorBBtn) colorBBtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: true, xProp: 'xB', yProp: 'yB', colorProp: 'colorB', colorLabel: 'color B' }); };
+  const colorBScreenshotBtn = document.getElementById('btn-pick-color-b-screenshot');
+  if (colorBScreenshotBtn) colorBScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: true, xProp: 'xB', yProp: 'yB', colorProp: 'colorB', colorLabel: 'color B', captureMode: 'screenshot' });
 }
 
 // ── Add Command ──────────────────────────────────────────────
@@ -521,6 +976,7 @@ function addCommand(type) {
     case 'GoWhile': cmds = [{ type, startLine: 1, count: 10 }]; break;
     case 'Comment': cmds = [{ type, value: 'Comment' }]; break;
     case 'ColorDetect': cmds = [{ type, x: 0, y: 0, color: 'FF0000', tolerance: 10 }]; break;
+    case 'WaitForPixelColor': cmds = [{ type, mode: 'match', x: 0, y: 0, xA: 0, yA: 0, xB: 0, yB: 0, color: 'FF0000', colorA: 'FF0000', colorB: '00FF00', fromColor: 'FF0000', toColor: '00FF00', tolerance: 10, timeoutMs: 1000, pollMs: 16, playSoundOnMatch: false }]; break;
     case 'Variable': cmds = [{ type, varName: 'var1', operation: '=', varValue: 0 }]; break;
     default: cmds = [{ type }]; break;
   }
@@ -974,6 +1430,13 @@ function exportToAhk(commands, hotkey='F1', speed=1.0) {
   return `; Generated by Kyrun\n#SingleInstance force\nSetBatchLines, -1\nSetKeyDelay, -1, -1\nSetMouseDelay, -1\ntoggle := false\n#MaxThreadsPerHotkey 2\n\n${hotkey}::\n    toggle := !toggle\n    if (!toggle)\n        return\n    Loop\n    {\n        if (!toggle)\n            break\n${body}    }\nReturn\n`;
 }
 
+const AMC_EXPORT_TYPES = new Set(['KeyDown', 'KeyUp', 'LeftDown', 'LeftUp', 'RightDown', 'RightUp', 'MiddleDown', 'MiddleUp', 'XButton1Down', 'XButton1Up', 'XButton2Down', 'XButton2Up', 'ScrollUp', 'ScrollDown', 'Delay', 'RandomDelay', 'GoWhile', 'GoTo', 'MouseMove']);
+const AHK_EXPORT_TYPES = new Set(['KeyDown', 'KeyUp', 'LeftDown', 'LeftUp', 'RightDown', 'RightUp', 'Delay', 'MouseMove']);
+
+function getUnsupportedCommandTypes(commands, supportedTypes) {
+  return [...new Set((commands || []).map(cmd => cmd?.type).filter(type => type && !supportedTypes.has(type)))];
+}
+
 // ── Import Handler ───────────────────────────────────────────
 async function importMacros() {
   try {
@@ -1028,8 +1491,16 @@ async function exportMacro() {
     const filePath = await window.kyrun.exportFileDialog(state.currentMacro.name);
     if (!filePath) return;
     let content;
-    if (filePath.endsWith('.amc')) content = exportToAmc(state.commands);
-    else if (filePath.endsWith('.ahk')) content = exportToAhk(state.commands);
+    if (filePath.endsWith('.amc')) {
+      const unsupported = getUnsupportedCommandTypes(state.commands, AMC_EXPORT_TYPES);
+      if (unsupported.length) showToast(`.amc export skips: ${unsupported.join(', ')}`, 'info');
+      content = exportToAmc(state.commands);
+    }
+    else if (filePath.endsWith('.ahk')) {
+      const unsupported = getUnsupportedCommandTypes(state.commands, AHK_EXPORT_TYPES);
+      if (unsupported.length) showToast(`.ahk export skips: ${unsupported.join(', ')}`, 'info');
+      content = exportToAhk(state.commands);
+    }
     else content = JSON.stringify({name:state.currentMacro.name,commands:state.commands,settings:state.macroSettings},null,2);
     await window.kyrun.saveMacroFile(filePath, content);
     showToast('Exported successfully','success');

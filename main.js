@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, Tray, Menu, nativeImage, dialog, shell, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Tray, Menu, nativeImage, dialog, shell, screen, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -46,6 +46,57 @@ function pointInMainWindowScreen(pt) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   const b = mainWindow.getBounds();
   return pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
+}
+
+function getPhysicalCursorPoint() {
+  if (input && typeof input.getMousePos === 'function') return input.getMousePos();
+  const dipPoint = screen.getCursorScreenPoint();
+  if (typeof screen.dipToScreenPoint === 'function') {
+    try { return screen.dipToScreenPoint(dipPoint); } catch (_) {}
+  }
+  return dipPoint;
+}
+
+function getDisplayForPhysicalPoint(point) {
+  const dipPoint = typeof screen.screenToDipPoint === 'function'
+    ? (() => { try { return screen.screenToDipPoint(point); } catch (_) { return point; } })()
+    : point;
+  return screen.getDisplayNearestPoint(dipPoint);
+}
+
+function getDisplayPhysicalBounds(display) {
+  if (typeof screen.dipToScreenRect === 'function') {
+    try { return screen.dipToScreenRect(null, display.bounds); } catch (_) {}
+  }
+  const scale = display?.scaleFactor || 1;
+  const bounds = display?.bounds || { x: 0, y: 0, width: 0, height: 0 };
+  return {
+    x: Math.round(bounds.x * scale),
+    y: Math.round(bounds.y * scale),
+    width: Math.round(bounds.width * scale),
+    height: Math.round(bounds.height * scale)
+  };
+}
+
+function parseHexColor(value) {
+  const raw = String(value ?? '').trim().replace(/^#/, '');
+  if (!/^[\da-fA-F]{6}$/.test(raw)) return null;
+  return {
+    r: parseInt(raw.slice(0, 2), 16),
+    g: parseInt(raw.slice(2, 4), 16),
+    b: parseInt(raw.slice(4, 6), 16)
+  };
+}
+
+function colorsMatchWithinTolerance(actualColor, expectedColor, tolerance = 0) {
+  const actual = typeof actualColor === 'string' ? parseHexColor(actualColor) : actualColor;
+  const expected = typeof expectedColor === 'string' ? parseHexColor(expectedColor) : expectedColor;
+  if (!actual || !expected) return false;
+  const rawTolerance = Number(tolerance);
+  const delta = Number.isFinite(rawTolerance) && rawTolerance >= 0 ? Math.min(255, Math.round(rawTolerance)) : 0;
+  return Math.abs(actual.r - expected.r) <= delta
+    && Math.abs(actual.g - expected.g) <= delta
+    && Math.abs(actual.b - expected.b) <= delta;
 }
 
 function startRecordCapturePolling() {
@@ -682,6 +733,12 @@ function setupIPC() {
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     else mainWindow.maximize();
   });
+  ipcMain.on('window-focus', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
   ipcMain.on('window-close', () => mainWindow.close());
   
   // Hotkey registration
@@ -740,6 +797,35 @@ function setupIPC() {
   ipcMain.handle('get-pixel-color', (_, x, y) => {
     if (!input) return '000000';
     try { return input.getPixelColor(x, y); } catch { return '000000'; }
+  });
+
+  ipcMain.handle('capture-screen-frame', async () => {
+    try {
+      const physicalPoint = getPhysicalCursorPoint();
+      const targetDisplay = getDisplayForPhysicalPoint(physicalPoint) || screen.getPrimaryDisplay();
+      const physicalBounds = getDisplayPhysicalBounds(targetDisplay);
+      const thumbnailSize = {
+        width: Math.max(1, physicalBounds.width || 1),
+        height: Math.max(1, physicalBounds.height || 1)
+      };
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize });
+      let source = sources.find(s => String(s.display_id || '') === String(targetDisplay.id));
+      if (!source && sources.length) source = sources[0];
+      if (!source || !source.thumbnail || source.thumbnail.isEmpty()) {
+        return { success: false, error: 'Screen capture returned no image' };
+      }
+      const size = source.thumbnail.getSize();
+      return {
+        success: true,
+        imageDataUrl: source.thumbnail.toDataURL(),
+        imageWidth: size.width,
+        imageHeight: size.height,
+        physicalBounds,
+        displayName: source.name || `Display ${targetDisplay.id}`
+      };
+    } catch (e) {
+      return { success: false, error: e?.message || 'Screen capture failed' };
+    }
   });
 
   // ── Mouse Button Trigger Registration ─────────────────────────────
@@ -843,6 +929,90 @@ function setupIPC() {
       }
     }
 
+    function toCoord(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.round(n) : 0;
+    }
+
+    function getWaitTimingOptions(cmd) {
+      const rawPollMs = Number(cmd.pollMs);
+      const pollMs = Number.isFinite(rawPollMs) && rawPollMs > 0 ? Math.min(1000, Math.max(1, Math.round(rawPollMs))) : 16;
+      const rawTimeoutMs = Number(cmd.timeoutMs);
+      const timeoutMs = Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0 ? Math.min(600000, Math.max(1, Math.round(rawTimeoutMs))) : 0;
+      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+      return { pollMs, timeoutMs, deadline };
+    }
+
+    function getWaitCommandOptions(cmd) {
+      const x = toCoord(cmd.x);
+      const y = toCoord(cmd.y);
+      const { pollMs, timeoutMs, deadline } = getWaitTimingOptions(cmd);
+      return { x, y, pollMs, timeoutMs, deadline };
+    }
+
+    async function waitForPixelPredicate(cmd, matcher) {
+      const { x, y, pollMs, timeoutMs, deadline } = getWaitCommandOptions(cmd);
+
+      while (!macroAbort) {
+        if (releaseVk && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+        const sampledColor = input.getPixelColor(x, y);
+        if (matcher(sampledColor)) return true;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) return false;
+        const nextSleepMs = timeoutMs > 0 ? Math.min(pollMs, Math.max(1, remainingMs)) : pollMs;
+        await new Promise(r => setTimeout(r, nextSleepMs));
+      }
+      return false;
+    }
+
+    async function waitForPixelColor(cmd) {
+      const mode = cmd.mode || 'match';
+      if (mode === 'transition') {
+        const fromColor = parseHexColor(cmd.fromColor);
+        const toColor = parseHexColor(cmd.toColor);
+        if (!fromColor || !toColor) return;
+        let sawFromColor = false;
+        return await waitForPixelPredicate(cmd, sampledColor => {
+          if (!sawFromColor) {
+            if (colorsMatchWithinTolerance(sampledColor, fromColor, cmd.tolerance)) sawFromColor = true;
+            return false;
+          }
+          return colorsMatchWithinTolerance(sampledColor, toColor, cmd.tolerance);
+        });
+      }
+
+      if (mode === 'orMatch') {
+        const colorA = parseHexColor(cmd.colorA);
+        const colorB = parseHexColor(cmd.colorB);
+        if (!colorA || !colorB) return;
+        const xA = toCoord(cmd.xA ?? cmd.x ?? 0);
+        const yA = toCoord(cmd.yA ?? cmd.y ?? 0);
+        const xB = toCoord(cmd.xB ?? cmd.x ?? 0);
+        const yB = toCoord(cmd.yB ?? cmd.y ?? 0);
+        const { pollMs, timeoutMs, deadline } = getWaitTimingOptions(cmd);
+
+        while (!macroAbort) {
+          if (releaseVk && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+          const sampledColorA = input.getPixelColor(xA, yA);
+          if (colorsMatchWithinTolerance(sampledColorA, colorA, cmd.tolerance)) return true;
+          const sampledColorB = input.getPixelColor(xB, yB);
+          if (colorsMatchWithinTolerance(sampledColorB, colorB, cmd.tolerance)) return true;
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) return false;
+          const nextSleepMs = timeoutMs > 0 ? Math.min(pollMs, Math.max(1, remainingMs)) : pollMs;
+          await new Promise(r => setTimeout(r, nextSleepMs));
+        }
+        return false;
+      }
+
+      const expectedColor = parseHexColor(cmd.color);
+      if (!expectedColor) return;
+      if (mode === 'notMatch') {
+        return await waitForPixelPredicate(cmd, sampledColor => !colorsMatchWithinTolerance(sampledColor, expectedColor, cmd.tolerance));
+      }
+      return await waitForPixelPredicate(cmd, sampledColor => colorsMatchWithinTolerance(sampledColor, expectedColor, cmd.tolerance));
+    }
+
     async function runOnce(cmds) {
       for (let i = 0; i < cmds.length; i++) {
         if (macroAbort) return;
@@ -851,6 +1021,7 @@ function setupIPC() {
         // the first command and looked like execution started on line 2. Delays still poll in sleep().
         if (releaseVk && i > 0 && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
         const cmd = cmds[i];
+        if (cmd && cmd.breakpoint) continue;
         mainWindow.webContents.send('macro-line', i);
         try {
           switch (cmd.type) {
@@ -918,9 +1089,16 @@ function setupIPC() {
             }
             case 'Comment': break;
             case 'ColorDetect': {
-              const color = input.getPixelColor(cmd.x, cmd.y);
-              if (color.toLowerCase() !== (cmd.color || '').toLowerCase()) {
+              const color = input.getPixelColor(toCoord(cmd.x), toCoord(cmd.y));
+              if (!colorsMatchWithinTolerance(color, cmd.color, cmd.tolerance)) {
                 i++;
+              }
+              break;
+            }
+            case 'WaitForPixelColor': {
+              const matched = await waitForPixelColor(cmd);
+              if (matched && cmd.playSoundOnMatch) {
+                try { shell.beep(); } catch (_) {}
               }
               break;
             }

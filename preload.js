@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('kyrun', {
   // ── Mouse / Screen ─────────────────────────
   getMousePosition: () => ipcRenderer.invoke('get-mouse-position'),
   getPixelColor: (x, y) => ipcRenderer.invoke('get-pixel-color', x, y),
+  captureScreenFrame: () => ipcRenderer.invoke('capture-screen-frame'),
 
   // ── Anonymous Mode ─────────────────────────
   toggleAnonymous: () => ipcRenderer.invoke('toggle-anonymous'),
@@ -48,6 +49,7 @@ contextBridge.exposeInMainWorld('kyrun', {
   // ── Window Controls ────────────────────────
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),
+  focusWindow: () => ipcRenderer.send('window-focus'),
   close: () => ipcRenderer.send('window-close'),
 
   // ── Hotkeys ────────────────────────────────
