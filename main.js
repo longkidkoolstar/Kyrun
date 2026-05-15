@@ -121,6 +121,74 @@ let colorTriggerbotButtonHeld = null;
 let colorTriggerbotWasOnTarget = false;
 /** @type {{ button: 'left'|'right'|'middle', at: number }|null} */
 let colorTriggerbotClickRelease = null;
+/** Centroid tracking for movement prediction (FOV pixel coords). */
+let colorTriggerbotTrackState = { px: -1, py: -1, ts: 0, vx: 0, vy: 0 };
+
+function colorTriggerbotResetTrackState() {
+  colorTriggerbotTrackState = { px: -1, py: -1, ts: 0, vx: 0, vy: 0 };
+}
+
+function colorTriggerbotResolveAimTarget(capture, analysis, predictionEnabled, leadMs, maxLeadPx, smoothFactor) {
+  const px = analysis.targetPx;
+  const py = analysis.targetPy;
+  if (px < 0 || py < 0) {
+    colorTriggerbotResetTrackState();
+    return { px, py, predicted: false };
+  }
+  if (!predictionEnabled) {
+    colorTriggerbotTrackState = { px, py, ts: Date.now(), vx: 0, vy: 0 };
+    return { px, py, predicted: false };
+  }
+
+  const now = Date.now();
+  const st = colorTriggerbotTrackState;
+  let vx = st.vx;
+  let vy = st.vy;
+
+  if (st.px >= 0 && st.ts > 0) {
+    const dt = now - st.ts;
+    if (dt > 0 && dt < 300) {
+      const rawVx = (px - st.px) / dt;
+      const rawVy = (py - st.py) / dt;
+      const smooth = Math.min(0.95, Math.max(0, Number(smoothFactor) ?? 0.65));
+      vx = vx * smooth + rawVx * (1 - smooth);
+      vy = vy * smooth + rawVy * (1 - smooth);
+    } else {
+      vx = 0;
+      vy = 0;
+    }
+  }
+
+  const lead = Math.max(0, Math.round(Number(leadMs) || 50));
+  let predPx = px + vx * lead;
+  let predPy = py + vy * lead;
+
+  const offX = predPx - px;
+  const offY = predPy - py;
+  const offDist = Math.sqrt(offX * offX + offY * offY);
+  const cap = Math.max(0, Math.round(Number(maxLeadPx) || 80));
+  if (offDist > cap && cap > 0) {
+    predPx = px + (offX / offDist) * cap;
+    predPy = py + (offY / offDist) * cap;
+  }
+
+  const w = capture.width;
+  const h = capture.height;
+  predPx = Math.max(0, Math.min(w - 1, Math.round(predPx)));
+  predPy = Math.max(0, Math.min(h - 1, Math.round(predPy)));
+
+  colorTriggerbotTrackState = { px, py, ts: now, vx, vy };
+  return {
+    px: predPx,
+    py: predPy,
+    predicted: true,
+    rawPx: px,
+    rawPy: py,
+    vx,
+    vy,
+    leadMs: lead
+  };
+}
 
 function colorTriggerbotActionToButton(action) {
   if (action === 'rightClick') return 'right';
@@ -345,12 +413,12 @@ function analyzeColorTriggerCapture(capture, matcher, maxDistance, opts = {}) {
   };
 }
 
-function colorTriggerbotAimAtTarget(capture, analysis, aimSpeed, offsetX, offsetY, aimMaxStep) {
-  if (!input || !capture || analysis.targetPx < 0 || analysis.targetPy < 0) return;
+function colorTriggerbotAimAtTarget(capture, targetPx, targetPy, aimSpeed, offsetX, offsetY, aimMaxStep) {
+  if (!input || !capture || targetPx < 0 || targetPy < 0) return;
   const cx = Math.floor(capture.width / 2);
   const cy = Math.floor(capture.height / 2);
-  const dx = (analysis.targetPx - cx) + (offsetX || 0);
-  const dy = (analysis.targetPy - cy) + (offsetY || 0);
+  const dx = (targetPx - cx) + (offsetX || 0);
+  const dy = (targetPy - cy) + (offsetY || 0);
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist < 2) return;
   const speed = Math.min(1, Math.max(0.05, Number(aimSpeed) || 0.35));
@@ -507,6 +575,7 @@ function stopColorTriggerbotPolling(notify = true) {
   colorTriggerbotWasOnTarget = false;
   colorTriggerbotMatcher = null;
   colorTriggerbotRuntime = null;
+  colorTriggerbotResetTrackState();
   if (notify) sendColorTriggerbotState(false);
 }
 
@@ -516,7 +585,8 @@ function colorTriggerbotTick() {
 
   const {
     fov, distance, cooldownMs, clickHoldMs, action, debug, holdWhileOnTarget,
-    clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen
+    clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen,
+    predictionEnabled, predictionLeadMs, predictionMaxLeadPx, predictionSmooth
   } = colorTriggerbotRuntime;
   const button = colorTriggerbotActionToButton(action);
   const captureCenterOnScreen = centerOnScreen || aimbotEnabled;
@@ -562,14 +632,27 @@ function colorTriggerbotTick() {
   const analysis = analyzeColorTriggerCapture(capture, colorTriggerbotMatcher, distance);
   const onTarget = !!analysis.wouldTrigger;
 
-  if (!onTarget) colorTriggerbotWasOnTarget = false;
+  if (!onTarget) {
+    colorTriggerbotWasOnTarget = false;
+    colorTriggerbotResetTrackState();
+  }
 
   if (aimbotEnabled && onTarget && analysis.targetPx >= 0) {
     const cx = Math.floor(capture.width / 2);
     const cy = Math.floor(capture.height / 2);
-    const aimDx = analysis.targetPx - cx + (aimOffsetX || 0);
-    const aimDy = analysis.targetPy - cy + (aimOffsetY || 0);
-    colorTriggerbotAimAtTarget(capture, analysis, aimSpeed, aimOffsetX, aimOffsetY, aimMaxStep);
+    const aimTarget = colorTriggerbotResolveAimTarget(
+      capture,
+      analysis,
+      predictionEnabled,
+      predictionLeadMs,
+      predictionMaxLeadPx,
+      predictionSmooth
+    );
+    const aimDx = aimTarget.px - cx + (aimOffsetX || 0);
+    const aimDy = aimTarget.py - cy + (aimOffsetY || 0);
+    colorTriggerbotAimAtTarget(
+      capture, aimTarget.px, aimTarget.py, aimSpeed, aimOffsetX, aimOffsetY, aimMaxStep
+    );
     if (debug) {
       const pos = input.getMousePos();
       sendColorTriggerbotDebug({
@@ -578,7 +661,13 @@ function colorTriggerbotTick() {
         ...analysis,
         aimMoved: true,
         aimDelta: { x: aimDx, y: aimDy },
-        aimTarget: { x: pos.x + aimDx, y: pos.y + aimDy }
+        aimTarget: { x: pos.x + aimDx, y: pos.y + aimDy },
+        aimPredicted: aimTarget.predicted,
+        aimRawPx: aimTarget.rawPx,
+        aimRawPy: aimTarget.rawPy,
+        aimPredPx: aimTarget.px,
+        aimPredPy: aimTarget.py,
+        aimVelocity: aimTarget.predicted ? { vx: aimTarget.vx, vy: aimTarget.vy } : undefined
       });
     }
   }
@@ -661,14 +750,20 @@ function applyColorTriggerbot(settings, enabled = colorTriggerbotActive) {
   const aimOffsetX = Math.round(Number(settings.colorTriggerbotAimOffsetX) || 0);
   const aimOffsetY = Math.round(Number(settings.colorTriggerbotAimOffsetY) || 0);
   const centerOnScreen = !!settings.colorTriggerbotCenterOnScreen;
+  const predictionEnabled = !!settings.colorTriggerbotPredictionEnabled;
+  const predictionLeadMs = Math.max(0, Math.min(200, Math.round(Number(settings.colorTriggerbotPredictionLeadMs) || 50)));
+  const predictionMaxLeadPx = Math.max(0, Math.min(200, Math.round(Number(settings.colorTriggerbotPredictionMaxLeadPx) || 80)));
+  const predictionSmooth = Math.min(0.95, Math.max(0, Number(settings.colorTriggerbotPredictionSmooth) ?? 0.65));
 
   colorTriggerbotMatcher = buildColorTriggerbotMatcher(settings);
   colorTriggerbotRuntime = {
     fov, distance, cooldownMs, clickHoldMs, action, debug, holdWhileOnTarget,
-    clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen
+    clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen,
+    predictionEnabled, predictionLeadMs, predictionMaxLeadPx, predictionSmooth
   };
   colorTriggerbotLastClick = 0;
   colorTriggerbotWasOnTarget = false;
+  colorTriggerbotResetTrackState();
 
   colorTriggerbotInterval = setInterval(colorTriggerbotTick, pollMs);
   sendColorTriggerbotState(true);
@@ -810,6 +905,89 @@ function ensureDirectories() {
   }
 }
 
+// ── Color triggerbot profiles ─────────────────────────────────────
+const COLOR_TRIGGERBOT_PROFILE_KEYS = [
+  'colorTriggerbotSource',
+  'colorTriggerbotPreset',
+  'colorTriggerbotColor',
+  'colorTriggerbotTolerance',
+  'colorTriggerbotHsvLower',
+  'colorTriggerbotHsvUpper',
+  'colorTriggerbotFov',
+  'colorTriggerbotCenterOnScreen',
+  'colorTriggerbotDistance',
+  'colorTriggerbotPollMs',
+  'colorTriggerbotCooldownMs',
+  'colorTriggerbotClickHoldMs',
+  'colorTriggerbotClickMode',
+  'colorTriggerbotAction',
+  'colorTriggerbotHoldWhileOnTarget',
+  'colorTriggerbotAimbotEnabled',
+  'colorTriggerbotAimSpeed',
+  'colorTriggerbotAimMaxStep',
+  'colorTriggerbotAimOffsetX',
+  'colorTriggerbotAimOffsetY',
+  'colorTriggerbotPredictionEnabled',
+  'colorTriggerbotPredictionLeadMs',
+  'colorTriggerbotPredictionMaxLeadPx',
+  'colorTriggerbotPredictionSmooth',
+  'colorTriggerbotDebug'
+];
+
+function extractColorTriggerbotProfileFromSettings(settings) {
+  const out = {};
+  for (const k of COLOR_TRIGGERBOT_PROFILE_KEYS) {
+    if (settings[k] !== undefined) out[k] = settings[k];
+  }
+  if (Array.isArray(out.colorTriggerbotHsvLower)) {
+    out.colorTriggerbotHsvLower = [...out.colorTriggerbotHsvLower];
+  }
+  if (Array.isArray(out.colorTriggerbotHsvUpper)) {
+    out.colorTriggerbotHsvUpper = [...out.colorTriggerbotHsvUpper];
+  }
+  return out;
+}
+
+function applyColorTriggerbotProfileToSettings(settings, profileName) {
+  const profiles = settings.colorTriggerbotProfiles;
+  if (!profiles || !profileName) return;
+  const p = profiles[profileName];
+  if (!p) return;
+  for (const k of COLOR_TRIGGERBOT_PROFILE_KEYS) {
+    if (p[k] !== undefined) settings[k] = p[k];
+  }
+  if (Array.isArray(settings.colorTriggerbotHsvLower)) {
+    settings.colorTriggerbotHsvLower = [...settings.colorTriggerbotHsvLower];
+  }
+  if (Array.isArray(settings.colorTriggerbotHsvUpper)) {
+    settings.colorTriggerbotHsvUpper = [...settings.colorTriggerbotHsvUpper];
+  }
+}
+
+function normalizeColorTriggerbotProfiles(settings) {
+  let profiles = settings.colorTriggerbotProfiles;
+  if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) {
+    profiles = { Default: extractColorTriggerbotProfileFromSettings(settings) };
+    settings.colorTriggerbotProfiles = profiles;
+  }
+  const names = Object.keys(profiles);
+  if (!settings.colorTriggerbotActiveProfile || !profiles[settings.colorTriggerbotActiveProfile]) {
+    settings.colorTriggerbotActiveProfile = names.includes('Default')
+      ? 'Default'
+      : (names[0] || 'Default');
+    if (!profiles[settings.colorTriggerbotActiveProfile]) {
+      profiles[settings.colorTriggerbotActiveProfile] = extractColorTriggerbotProfileFromSettings(settings);
+    }
+  }
+}
+
+function persistActiveColorTriggerbotProfile(settings) {
+  normalizeColorTriggerbotProfiles(settings);
+  const active = settings.colorTriggerbotActiveProfile;
+  settings.colorTriggerbotProfiles = { ...settings.colorTriggerbotProfiles };
+  settings.colorTriggerbotProfiles[active] = extractColorTriggerbotProfileFromSettings(settings);
+}
+
 // ── Load / Save Settings ───────────────────────────────────────────
 function loadSettings() {
   let raw = {};
@@ -820,7 +998,7 @@ function loadSettings() {
   } catch (e) {
     raw = {};
   }
-  return {
+  const merged = {
     theme: 'dark',
     startMinimized: false,
     minimizeToTray: true,
@@ -877,10 +1055,19 @@ function loadSettings() {
     colorTriggerbotAimMaxStep: 40,
     colorTriggerbotAimOffsetX: 0,
     colorTriggerbotAimOffsetY: 0,
+    colorTriggerbotPredictionEnabled: false,
+    colorTriggerbotPredictionLeadMs: 50,
+    colorTriggerbotPredictionMaxLeadPx: 80,
+    colorTriggerbotPredictionSmooth: 0.65,
     colorTriggerbotDebug: false,
+    colorTriggerbotProfiles: {},
+    colorTriggerbotActiveProfile: 'Default',
     ...raw,
     colorTriggerbotEnabled: false
   };
+  normalizeColorTriggerbotProfiles(merged);
+  applyColorTriggerbotProfileToSettings(merged, merged.colorTriggerbotActiveProfile);
+  return merged;
 }
 
 /** Same rules as renderer `convertToElectronAccelerator` — keyboard-only. */
@@ -992,6 +1179,7 @@ function applyTriggersToggleBind(settings) {
 function saveSettings(settings) {
   const next = { ...settings };
   delete next.colorTriggerbotEnabled;
+  persistActiveColorTriggerbotProfile(next);
   appSettings = { ...appSettings, ...next };
   appSettings.colorTriggerbotEnabled = false;
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(appSettings, null, 2));

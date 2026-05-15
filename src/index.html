@@ -387,6 +387,19 @@
 
           <div class="settings-view__group" id="color-triggerbot-settings">
             <div class="settings-view__group-title">Color triggerbot</div>
+            <div class="settings-view__row color-triggerbot-profile-row">
+              <div>
+                <div class="settings-view__row-label">Character profile</div>
+                <div class="settings-view__row-desc">Save color, aim, and click settings per character. Toggle bind and on/off state stay global.</div>
+              </div>
+              <div class="color-triggerbot-profile-controls">
+                <select class="properties-panel__input" id="setting-color-trigger-profile" style="width:160px" title="Switch character profile"></select>
+                <button type="button" class="profile-selector__btn" id="btn-colorbot-profile-new" title="New profile">+ New</button>
+                <button type="button" class="profile-selector__btn" id="btn-colorbot-profile-rename" title="Rename profile">✎ Rename</button>
+                <button type="button" class="profile-selector__btn" id="btn-colorbot-profile-dup" title="Duplicate profile">⧉ Dup</button>
+                <button type="button" class="profile-selector__btn" id="btn-colorbot-profile-del" title="Delete profile">✕ Delete</button>
+              </div>
+            </div>
             <div class="settings-view__row color-triggerbot-save-row">
               <button type="button" class="btn btn--primary" id="btn-color-trigger-save">Save colorbot settings</button>
               <span class="color-triggerbot-save-status" id="color-trigger-save-status">Changes save automatically</span>
@@ -552,6 +565,32 @@
                   <input type="number" class="properties-panel__input" id="setting-color-trigger-aim-offset-y" style="width:72px" value="0">
                 </div>
               </div>
+              <div class="settings-view__row">
+                <div>
+                  <div class="settings-view__row-label">Movement prediction</div>
+                  <div class="settings-view__row-desc">Lead aim toward where the color blob is moving. Works best with Aimbot on and Center FOV on screen.</div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="setting-color-trigger-prediction">
+                  <span class="toggle-switch__slider"></span>
+                </label>
+              </div>
+              <div id="color-trigger-prediction-panel" class="color-triggerbot-panel" hidden>
+                <div class="settings-view__row">
+                  <div>
+                    <div class="settings-view__row-label">Prediction lead (ms)</div>
+                    <div class="settings-view__row-desc">How far ahead to aim based on recent movement. Try 40–80 for strafing.</div>
+                  </div>
+                  <input type="number" class="properties-panel__input" id="setting-color-trigger-prediction-lead" style="width:80px" min="0" max="200" value="50">
+                </div>
+                <div class="settings-view__row">
+                  <div>
+                    <div class="settings-view__row-label">Max lead (px)</div>
+                    <div class="settings-view__row-desc">Caps predicted offset so aim does not jump too far on spikes.</div>
+                  </div>
+                  <input type="number" class="properties-panel__input" id="setting-color-trigger-prediction-max" style="width:80px" min="0" max="200" value="80">
+                </div>
+              </div>
             </div>
             <div class="settings-view__row">
               <div>
@@ -598,7 +637,7 @@
               <div>
                 <div class="settings-view__row-label">Poll interval (ms)</div>
               </div>
-              <input type="number" class="properties-panel__input" id="setting-color-trigger-poll" style="width:80px" min="8" max="100">
+              <input type="number" class="properties-panel__input" id="setting-color-trigger-poll" style="width:80px" min="8" max="100" step="1" value="16" title="Saved scan interval (ms). Blank or invalid keeps last saved value.">
             </div>
 
           </div>

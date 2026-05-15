@@ -274,6 +274,19 @@ html, body {
   margin-bottom: 8px;
 }
 
+.color-triggerbot-profile-row {
+  align-items: flex-start;
+}
+
+.color-triggerbot-profile-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 100%;
+}
+
 .color-triggerbot-save-row {
   align-items: center;
   gap: 12px;

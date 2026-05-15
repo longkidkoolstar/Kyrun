@@ -267,6 +267,14 @@ function setModalPresentation(opts = {}) {
 function setModalCleanup(fn) {
   activeModalCleanup = typeof fn === 'function' ? fn : null;
 }
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function showModal(title, bodyHTML, buttons=[]) {
   if (activeModalCleanup) {
     try { activeModalCleanup(); } catch {}
@@ -2296,6 +2304,9 @@ function syncColorTriggerbotPanels() {
   const aimbotOn = !!($('#setting-color-trigger-aimbot')?.checked);
   const aimbotPanel = $('#color-trigger-aimbot-panel');
   if (aimbotPanel) aimbotPanel.hidden = !aimbotOn;
+  const predOn = !!($('#setting-color-trigger-prediction')?.checked);
+  const predPanel = $('#color-trigger-prediction-panel');
+  if (predPanel) predPanel.hidden = !aimbotOn || !predOn;
   syncColorTriggerDebugPanel();
   syncColorTriggerbotToggleBindUi();
 }
@@ -2343,6 +2354,12 @@ function formatColorTriggerDebug(data) {
   if (data.aimMoved) lines.push('Aim: moved toward target');
   if (data.aimDelta) lines.push(`Aim delta: ${data.aimDelta.x},${data.aimDelta.y}`);
   if (data.aimTarget) lines.push(`Aim toward: ${data.aimTarget.x},${data.aimTarget.y}`);
+  if (data.aimPredicted) lines.push('Aim: using movement prediction');
+  if (data.aimRawPx != null) lines.push(`Aim raw centroid: ${data.aimRawPx},${data.aimRawPy}`);
+  if (data.aimPredPx != null) lines.push(`Aim predicted: ${data.aimPredPx},${data.aimPredPy}`);
+  if (data.aimVelocity) {
+    lines.push(`Aim velocity px/ms: ${Number(data.aimVelocity.vx).toFixed(3)},${Number(data.aimVelocity.vy).toFixed(3)}`);
+  }
   if (data.clickQueued) lines.push('Click: queued (down, up after hold)');
   if (data.clickHoldMs != null) lines.push(`Click hold: ${data.clickHoldMs}ms`);
   if (data.cooldownMs != null) lines.push(`Cooldown: ${data.cooldownMs}ms`);
@@ -2518,6 +2535,375 @@ async function runColorTriggerProbe() {
   }
 }
 
+const COLOR_TRIGGERBOT_PROFILE_KEYS = [
+  'colorTriggerbotSource',
+  'colorTriggerbotPreset',
+  'colorTriggerbotColor',
+  'colorTriggerbotTolerance',
+  'colorTriggerbotHsvLower',
+  'colorTriggerbotHsvUpper',
+  'colorTriggerbotFov',
+  'colorTriggerbotCenterOnScreen',
+  'colorTriggerbotDistance',
+  'colorTriggerbotPollMs',
+  'colorTriggerbotCooldownMs',
+  'colorTriggerbotClickHoldMs',
+  'colorTriggerbotClickMode',
+  'colorTriggerbotAction',
+  'colorTriggerbotHoldWhileOnTarget',
+  'colorTriggerbotAimbotEnabled',
+  'colorTriggerbotAimSpeed',
+  'colorTriggerbotAimMaxStep',
+  'colorTriggerbotAimOffsetX',
+  'colorTriggerbotAimOffsetY',
+  'colorTriggerbotPredictionEnabled',
+  'colorTriggerbotPredictionLeadMs',
+  'colorTriggerbotPredictionMaxLeadPx',
+  'colorTriggerbotPredictionSmooth',
+  'colorTriggerbotDebug'
+];
+
+let colorbotProfileSelectSyncing = false;
+
+function extractColorTriggerbotProfileFromSettings(settings) {
+  const out = {};
+  for (const k of COLOR_TRIGGERBOT_PROFILE_KEYS) {
+    if (settings[k] !== undefined) out[k] = settings[k];
+  }
+  if (Array.isArray(out.colorTriggerbotHsvLower)) {
+    out.colorTriggerbotHsvLower = [...out.colorTriggerbotHsvLower];
+  }
+  if (Array.isArray(out.colorTriggerbotHsvUpper)) {
+    out.colorTriggerbotHsvUpper = [...out.colorTriggerbotHsvUpper];
+  }
+  return out;
+}
+
+function applyColorTriggerbotProfileToSettings(settings, profileName) {
+  const profiles = settings.colorTriggerbotProfiles;
+  if (!profiles || !profileName) return;
+  const p = profiles[profileName];
+  if (!p) return;
+  for (const k of COLOR_TRIGGERBOT_PROFILE_KEYS) {
+    if (p[k] !== undefined) settings[k] = p[k];
+  }
+  if (Array.isArray(settings.colorTriggerbotHsvLower)) {
+    settings.colorTriggerbotHsvLower = [...settings.colorTriggerbotHsvLower];
+  }
+  if (Array.isArray(settings.colorTriggerbotHsvUpper)) {
+    settings.colorTriggerbotHsvUpper = [...settings.colorTriggerbotHsvUpper];
+  }
+}
+
+function sanitizeColorbotProfileName(name) {
+  return String(name || '').trim().slice(0, 48);
+}
+
+function resolveColorbotProfileKey(profiles, name) {
+  if (!profiles || !name) return null;
+  if (profiles[name]) return name;
+  const want = sanitizeColorbotProfileName(name);
+  for (const key of Object.keys(profiles)) {
+    if (sanitizeColorbotProfileName(key) === want) return key;
+  }
+  return null;
+}
+
+function syncColorTriggerbotProfileSelect(settings) {
+  const sel = $('#setting-color-trigger-profile');
+  if (!sel) return;
+  const profiles = settings.colorTriggerbotProfiles || {};
+  const active = settings.colorTriggerbotActiveProfile || 'Default';
+  const names = Object.keys(profiles).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  colorbotProfileSelectSyncing = true;
+  sel.innerHTML = '';
+  for (const n of names) {
+    const opt = document.createElement('option');
+    opt.value = n;
+    opt.textContent = n;
+    if (n === active) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  if (!names.length) {
+    const opt = document.createElement('option');
+    opt.value = 'Default';
+    opt.textContent = 'Default';
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+  colorbotProfileSelectSyncing = false;
+}
+
+function persistCurrentColorbotProfileInSettings(settings) {
+  readColorTriggerbotFromForm(settings);
+  const profiles = { ...(settings.colorTriggerbotProfiles || {}) };
+  const active = settings.colorTriggerbotActiveProfile || 'Default';
+  profiles[active] = extractColorTriggerbotProfileFromSettings(settings);
+  settings.colorTriggerbotProfiles = profiles;
+}
+
+async function switchColorbotProfile(name) {
+  const next = sanitizeColorbotProfileName(name);
+  if (!next) return;
+  try {
+    const settings = await window.kyrun.getSettings();
+    const profiles = settings.colorTriggerbotProfiles || {};
+    const nextKey = resolveColorbotProfileKey(profiles, next);
+    if (!nextKey) {
+      showToast('Profile not found', 'error');
+      return;
+    }
+    if (settings.colorTriggerbotActiveProfile === nextKey) return;
+    persistCurrentColorbotProfileInSettings(settings);
+    settings.colorTriggerbotActiveProfile = nextKey;
+    applyColorTriggerbotProfileToSettings(settings, nextKey);
+    loadColorTriggerbotToForm(settings);
+    await saveColorTriggerbotSettings({ toast: false, baseSettings: settings });
+    showToast(`Colorbot profile: ${nextKey}`, 'info');
+  } catch {
+    showToast('Failed to switch colorbot profile', 'error');
+  }
+}
+
+function showNewColorbotProfileModal() {
+  showModal(
+    'New colorbot profile',
+    '<input type="text" class="properties-panel__input" id="new-colorbot-profile-name" placeholder="Character name…" maxlength="48">',
+    [
+      { label: 'Cancel', type: 'secondary', action: () => {} },
+      {
+        label: 'Create',
+        type: 'primary',
+        action: () => { void createColorbotProfileFromModal(); }
+      }
+    ]
+  );
+  setTimeout(() => document.getElementById('new-colorbot-profile-name')?.focus(), 50);
+}
+
+async function createColorbotProfileFromModal() {
+  const name = sanitizeColorbotProfileName(document.getElementById('new-colorbot-profile-name')?.value);
+  if (!name) return;
+  try {
+    const settings = await window.kyrun.getSettings();
+    persistCurrentColorbotProfileInSettings(settings);
+    const profiles = { ...(settings.colorTriggerbotProfiles || {}) };
+    if (profiles[name]) {
+      showToast('Profile already exists', 'error');
+      return;
+    }
+    profiles[name] = extractColorTriggerbotProfileFromSettings(settings);
+    settings.colorTriggerbotProfiles = profiles;
+    settings.colorTriggerbotActiveProfile = name;
+    loadColorTriggerbotToForm(settings);
+    await saveColorTriggerbotSettings({ toast: false, baseSettings: settings });
+    showToast(`Created colorbot profile "${name}"`, 'success');
+  } catch {
+    showToast('Could not create profile', 'error');
+  }
+}
+
+function showRenameColorbotProfileModal() {
+  const sel = $('#setting-color-trigger-profile');
+  const current = sel?.value || 'Default';
+  showModal(
+    'Rename colorbot profile',
+    `<input type="text" class="properties-panel__input" id="rename-colorbot-profile-name" value="${escapeHtml(current)}" maxlength="48">`,
+    [
+      { label: 'Cancel', type: 'secondary', action: () => {} },
+      {
+        label: 'Rename',
+        type: 'primary',
+        action: () => { void renameColorbotProfileFromModal(); }
+      }
+    ]
+  );
+  setTimeout(() => {
+    const input = document.getElementById('rename-colorbot-profile-name');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }, 50);
+}
+
+async function renameColorbotProfileFromModal() {
+  const sel = $('#setting-color-trigger-profile');
+  const oldName = sel?.value || 'Default';
+  const name = sanitizeColorbotProfileName(document.getElementById('rename-colorbot-profile-name')?.value);
+  if (!name || name === oldName) return;
+  try {
+    const settings = await window.kyrun.getSettings();
+    const profiles = { ...(settings.colorTriggerbotProfiles || {}) };
+    const oldKey = resolveColorbotProfileKey(profiles, oldName);
+    if (!oldKey) {
+      showToast('Profile not found', 'error');
+      return;
+    }
+    if (profiles[name] && name !== oldKey) {
+      showToast('Profile name already in use', 'error');
+      return;
+    }
+    settings.colorTriggerbotActiveProfile = oldKey;
+    persistCurrentColorbotProfileInSettings(settings);
+    const nextProfiles = { ...(settings.colorTriggerbotProfiles || {}) };
+    nextProfiles[name] = nextProfiles[oldKey];
+    delete nextProfiles[oldKey];
+    settings.colorTriggerbotProfiles = nextProfiles;
+    settings.colorTriggerbotActiveProfile = name;
+    loadColorTriggerbotToForm(settings);
+    await saveColorTriggerbotSettings({ toast: false, baseSettings: settings });
+    showToast(`Renamed to "${name}"`, 'success');
+  } catch {
+    showToast('Could not rename profile', 'error');
+  }
+}
+
+async function duplicateColorbotProfile() {
+  const sel = $('#setting-color-trigger-profile');
+  const base = sel?.value || 'Default';
+  const suffix = ' copy';
+  try {
+    const settings = await window.kyrun.getSettings();
+    persistCurrentColorbotProfileInSettings(settings);
+    const profiles = { ...(settings.colorTriggerbotProfiles || {}) };
+    const baseKey = resolveColorbotProfileKey(profiles, base) || base;
+    const source = profiles[baseKey] || extractColorTriggerbotProfileFromSettings(settings);
+    let name = sanitizeColorbotProfileName(base + suffix);
+    let i = 2;
+    while (profiles[name]) {
+      name = sanitizeColorbotProfileName(`${base}${suffix} ${i}`);
+      i += 1;
+    }
+    profiles[name] = JSON.parse(JSON.stringify(source));
+    settings.colorTriggerbotProfiles = profiles;
+    settings.colorTriggerbotActiveProfile = name;
+    applyColorTriggerbotProfileToSettings(settings, name);
+    loadColorTriggerbotToForm(settings);
+    await saveColorTriggerbotSettings({ toast: false, baseSettings: settings });
+    showToast(`Duplicated as "${name}"`, 'success');
+  } catch {
+    showToast('Could not duplicate profile', 'error');
+  }
+}
+
+async function deleteColorbotProfile() {
+  const sel = $('#setting-color-trigger-profile');
+  const name = sel?.value;
+  if (!name) return;
+  try {
+    const settings = await window.kyrun.getSettings();
+    const profiles = { ...(settings.colorTriggerbotProfiles || {}) };
+    const names = Object.keys(profiles);
+    const key = resolveColorbotProfileKey(profiles, name);
+    if (!key) {
+      showToast('Profile not found', 'error');
+      return;
+    }
+    if (names.length <= 1) {
+      showToast('Cannot delete the only profile', 'error');
+      return;
+    }
+    delete profiles[key];
+    settings.colorTriggerbotProfiles = profiles;
+    if (settings.colorTriggerbotActiveProfile === key) {
+      const next = names.find(n => n !== key) || Object.keys(profiles)[0];
+      settings.colorTriggerbotActiveProfile = next;
+      applyColorTriggerbotProfileToSettings(settings, next);
+    }
+    loadColorTriggerbotToForm(settings);
+    await saveColorTriggerbotSettings({ toast: false, baseSettings: settings });
+    showToast(`Deleted profile "${name}"`, 'info');
+  } catch {
+    showToast('Could not delete profile', 'error');
+  }
+}
+
+function loadColorTriggerbotToForm(s) {
+  const cts = $('#setting-color-trigger-source');
+  const ctp = $('#setting-color-trigger-preset');
+  const ctc = $('#setting-color-trigger-color');
+  const ctt = $('#setting-color-trigger-tolerance');
+  const cth0 = $('#setting-color-trigger-h0');
+  const cts0 = $('#setting-color-trigger-s0');
+  const ctv0 = $('#setting-color-trigger-v0');
+  const cth1 = $('#setting-color-trigger-h1');
+  const cts1 = $('#setting-color-trigger-s1');
+  const ctv1 = $('#setting-color-trigger-v1');
+  const ctf = $('#setting-color-trigger-fov');
+  const ctcs = $('#setting-color-trigger-center-screen');
+  const ctd = $('#setting-color-trigger-distance');
+  const ctpl = $('#setting-color-trigger-poll');
+  const ctcd = $('#setting-color-trigger-cooldown');
+  const ctch = $('#setting-color-trigger-click-hold');
+  const ctcm = $('#setting-color-trigger-click-mode');
+  const ctaim = $('#setting-color-trigger-aimbot');
+  const ctas = $('#setting-color-trigger-aim-speed');
+  const ctams = $('#setting-color-trigger-aim-max-step');
+  const ctaox = $('#setting-color-trigger-aim-offset-x');
+  const ctaoy = $('#setting-color-trigger-aim-offset-y');
+  const ctpred = $('#setting-color-trigger-prediction');
+  const ctplead = $('#setting-color-trigger-prediction-lead');
+  const ctpmax = $('#setting-color-trigger-prediction-max');
+  const cta = $('#setting-color-trigger-action');
+  const ctdbg = $('#setting-color-trigger-debug');
+  const cthold = $('#setting-color-trigger-hold');
+  const cttoe = $('#setting-color-trigger-toggle-enabled');
+  const cttob = $('#setting-color-trigger-toggle-bind');
+  if (cts) cts.value = s.colorTriggerbotSource || 'preset';
+  if (ctp) ctp.value = s.colorTriggerbotPreset || 'bluegreen';
+  if (ctc) ctc.value = (s.colorTriggerbotColor || 'FF0000').replace(/^#/, '');
+  if (ctt) ctt.value = s.colorTriggerbotTolerance != null ? s.colorTriggerbotTolerance : 10;
+  const lo = s.colorTriggerbotHsvLower || [80, 40, 225];
+  const hi = s.colorTriggerbotHsvUpper || [90, 100, 255];
+  if (cth0) cth0.value = lo[0];
+  if (cts0) cts0.value = lo[1];
+  if (ctv0) ctv0.value = lo[2];
+  if (cth1) cth1.value = hi[0];
+  if (cts1) cts1.value = hi[1];
+  if (ctv1) ctv1.value = hi[2];
+  if (ctf) ctf.value = s.colorTriggerbotFov != null ? s.colorTriggerbotFov : 120;
+  if (ctcs) ctcs.checked = !!s.colorTriggerbotCenterOnScreen;
+  if (ctd) ctd.value = s.colorTriggerbotDistance != null ? s.colorTriggerbotDistance : 25;
+  if (ctpl) ctpl.value = s.colorTriggerbotPollMs != null ? s.colorTriggerbotPollMs : 16;
+  if (ctcd) ctcd.value = s.colorTriggerbotCooldownMs != null ? s.colorTriggerbotCooldownMs : 50;
+  if (ctch) ctch.value = s.colorTriggerbotClickHoldMs != null ? s.colorTriggerbotClickHoldMs : 50;
+  if (ctcm) ctcm.value = s.colorTriggerbotClickMode || 'single';
+  if (ctaim) ctaim.checked = !!s.colorTriggerbotAimbotEnabled;
+  if (ctas) ctas.value = s.colorTriggerbotAimSpeed != null ? s.colorTriggerbotAimSpeed : 0.35;
+  if (ctams) ctams.value = s.colorTriggerbotAimMaxStep != null ? s.colorTriggerbotAimMaxStep : 40;
+  if (ctaox) ctaox.value = s.colorTriggerbotAimOffsetX != null ? s.colorTriggerbotAimOffsetX : 0;
+  if (ctaoy) ctaoy.value = s.colorTriggerbotAimOffsetY != null ? s.colorTriggerbotAimOffsetY : 0;
+  if (ctpred) ctpred.checked = !!s.colorTriggerbotPredictionEnabled;
+  if (ctplead) ctplead.value = s.colorTriggerbotPredictionLeadMs != null ? s.colorTriggerbotPredictionLeadMs : 50;
+  if (ctpmax) ctpmax.value = s.colorTriggerbotPredictionMaxLeadPx != null ? s.colorTriggerbotPredictionMaxLeadPx : 80;
+  if (cta) cta.value = s.colorTriggerbotAction || 'leftClick';
+  if (cthold) cthold.checked = !!s.colorTriggerbotHoldWhileOnTarget;
+  if (ctdbg) ctdbg.checked = !!s.colorTriggerbotDebug;
+  if (cttoe) cttoe.checked = !!s.colorTriggerbotToggleBindEnabled;
+  if (cttob) cttob.value = s.colorTriggerbotToggleBindKey || '';
+  syncColorTriggerbotProfileSelect(s);
+  syncColorTriggerbotPanels();
+}
+
+async function refreshColorTriggerbotEnabledFromMain() {
+  try {
+    const ct = await window.kyrun.getColorTriggerbotState();
+    syncColorTriggerbotEnabledUi(ct);
+  } catch {
+    syncColorTriggerbotEnabledUi({ active: false, enabled: false });
+  }
+}
+
+/** Parse bounded integer from settings UI; keeps prior saved value when input is blank or invalid (avoids resetting e.g. poll to 16). */
+function clampIntFromInput(el, min, max, prior, hardDefault) {
+  const fallback = Number.isFinite(Number(prior)) ? Math.round(Number(prior)) : hardDefault;
+  const trimmed = String(el?.value ?? '').trim();
+  const raw = trimmed === '' ? NaN : parseInt(trimmed, 10);
+  const n = Number.isFinite(raw) ? raw : fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
 function readColorTriggerbotFromForm(settings) {
   const en = $('#setting-color-trigger-enabled');
   const src = $('#setting-color-trigger-source');
@@ -2541,6 +2927,9 @@ function readColorTriggerbotFromForm(settings) {
   const aimMaxStep = $('#setting-color-trigger-aim-max-step');
   const aimOx = $('#setting-color-trigger-aim-offset-x');
   const aimOy = $('#setting-color-trigger-aim-offset-y');
+  const prediction = $('#setting-color-trigger-prediction');
+  const predLead = $('#setting-color-trigger-prediction-lead');
+  const predMax = $('#setting-color-trigger-prediction-max');
   const act = $('#setting-color-trigger-action');
   const hold = $('#setting-color-trigger-hold');
   const dbg = $('#setting-color-trigger-debug');
@@ -2551,7 +2940,7 @@ function readColorTriggerbotFromForm(settings) {
   settings.colorTriggerbotSource = src ? src.value : 'preset';
   settings.colorTriggerbotPreset = preset ? preset.value : 'bluegreen';
   settings.colorTriggerbotColor = (color ? color.value : 'FF0000').replace(/^#/, '').toUpperCase();
-  settings.colorTriggerbotTolerance = Math.min(255, Math.max(0, parseInt(tol?.value, 10) || 10));
+  settings.colorTriggerbotTolerance = clampIntFromInput(tol, 0, 255, settings.colorTriggerbotTolerance, 10);
   settings.colorTriggerbotHsvLower = [
     parseInt(h0?.value, 10) || 0,
     parseInt(s0?.value, 10) || 0,
@@ -2562,13 +2951,13 @@ function readColorTriggerbotFromForm(settings) {
     parseInt(s1?.value, 10) || 255,
     parseInt(v1?.value, 10) || 255
   ];
-  settings.colorTriggerbotFov = Math.min(400, Math.max(20, parseInt(fov?.value, 10) || 120));
+  settings.colorTriggerbotFov = clampIntFromInput(fov, 20, 400, settings.colorTriggerbotFov, 120);
   settings.colorTriggerbotCenterOnScreen = !!(centerScreen && centerScreen.checked);
-  settings.colorTriggerbotDistance = Math.min(200, Math.max(1, parseInt(dist?.value, 10) || 25));
-  settings.colorTriggerbotPollMs = Math.min(100, Math.max(8, parseInt(poll?.value, 10) || 16));
-  settings.colorTriggerbotCooldownMs = Math.max(0, parseInt(cd?.value, 10) || 50);
+  settings.colorTriggerbotDistance = clampIntFromInput(dist, 1, 200, settings.colorTriggerbotDistance, 25);
+  settings.colorTriggerbotPollMs = clampIntFromInput(poll, 8, 100, settings.colorTriggerbotPollMs, 16);
+  settings.colorTriggerbotCooldownMs = clampIntFromInput(cd, 0, 5000, settings.colorTriggerbotCooldownMs, 50);
   const clickHold = $('#setting-color-trigger-click-hold');
-  settings.colorTriggerbotClickHoldMs = Math.max(0, parseInt(clickHold?.value, 10) ?? 50);
+  settings.colorTriggerbotClickHoldMs = clampIntFromInput(clickHold, 0, 500, settings.colorTriggerbotClickHoldMs, 50);
   const mode = clickMode ? clickMode.value : 'single';
   settings.colorTriggerbotClickMode = ['single', 'rapid', 'edge'].includes(mode) ? mode : 'single';
   settings.colorTriggerbotAimbotEnabled = !!(aimbot && aimbot.checked);
@@ -2576,6 +2965,9 @@ function readColorTriggerbotFromForm(settings) {
   settings.colorTriggerbotAimMaxStep = Math.min(200, Math.max(4, Math.round(parseFloat(aimMaxStep?.value) || 40)));
   settings.colorTriggerbotAimOffsetX = Math.round(parseFloat(aimOx?.value) || 0);
   settings.colorTriggerbotAimOffsetY = Math.round(parseFloat(aimOy?.value) || 0);
+  settings.colorTriggerbotPredictionEnabled = !!(prediction && prediction.checked);
+  settings.colorTriggerbotPredictionLeadMs = clampIntFromInput(predLead, 0, 200, settings.colorTriggerbotPredictionLeadMs, 50);
+  settings.colorTriggerbotPredictionMaxLeadPx = clampIntFromInput(predMax, 0, 200, settings.colorTriggerbotPredictionMaxLeadPx, 80);
   settings.colorTriggerbotAction = act ? act.value : 'leftClick';
   settings.colorTriggerbotHoldWhileOnTarget = !!(hold && hold.checked);
   settings.colorTriggerbotDebug = !!(dbg && dbg.checked);
@@ -2613,7 +3005,9 @@ function scheduleColorTriggerbotSave() {
 async function saveColorTriggerbotSettings(opts = {}) {
   const showToastOnSave = opts.toast === true;
   try {
-    const settings = await window.kyrun.getSettings();
+    const settings = opts.baseSettings
+      ? { ...opts.baseSettings }
+      : await window.kyrun.getSettings();
     readColorTriggerbotFromForm(settings);
     const enabled = !!($('#setting-color-trigger-enabled')?.checked);
     settings.colorTriggerbotEnabled = enabled;
@@ -2697,70 +3091,9 @@ async function loadSettingsToForm() {
     if (hkte) hkte.checked = s.hotkeysTtsEnabled !== false;
     if (cbte) cbte.checked = s.colorbotTtsEnabled !== false;
     const cte = $('#setting-color-trigger-enabled');
-    const cts = $('#setting-color-trigger-source');
-    const ctp = $('#setting-color-trigger-preset');
-    const ctc = $('#setting-color-trigger-color');
-    const ctt = $('#setting-color-trigger-tolerance');
-    const cth0 = $('#setting-color-trigger-h0');
-    const cts0 = $('#setting-color-trigger-s0');
-    const ctv0 = $('#setting-color-trigger-v0');
-    const cth1 = $('#setting-color-trigger-h1');
-    const cts1 = $('#setting-color-trigger-s1');
-    const ctv1 = $('#setting-color-trigger-v1');
-    const ctf = $('#setting-color-trigger-fov');
-    const ctcs = $('#setting-color-trigger-center-screen');
-    const ctd = $('#setting-color-trigger-distance');
-    const ctpl = $('#setting-color-trigger-poll');
-    const ctcd = $('#setting-color-trigger-cooldown');
-    const ctch = $('#setting-color-trigger-click-hold');
-    const ctcm = $('#setting-color-trigger-click-mode');
-    const ctaim = $('#setting-color-trigger-aimbot');
-    const ctas = $('#setting-color-trigger-aim-speed');
-    const ctams = $('#setting-color-trigger-aim-max-step');
-    const ctaox = $('#setting-color-trigger-aim-offset-x');
-    const ctaoy = $('#setting-color-trigger-aim-offset-y');
-    const cta = $('#setting-color-trigger-action');
-    const ctdbg = $('#setting-color-trigger-debug');
-    const cthold = $('#setting-color-trigger-hold');
-    const cttoe = $('#setting-color-trigger-toggle-enabled');
-    const cttob = $('#setting-color-trigger-toggle-bind');
     if (cte) cte.checked = false;
-    if (cts) cts.value = s.colorTriggerbotSource || 'preset';
-    if (ctp) ctp.value = s.colorTriggerbotPreset || 'bluegreen';
-    if (ctc) ctc.value = (s.colorTriggerbotColor || 'FF0000').replace(/^#/, '');
-    if (ctt) ctt.value = s.colorTriggerbotTolerance != null ? s.colorTriggerbotTolerance : 10;
-    const lo = s.colorTriggerbotHsvLower || [80, 40, 225];
-    const hi = s.colorTriggerbotHsvUpper || [90, 100, 255];
-    if (cth0) cth0.value = lo[0];
-    if (cts0) cts0.value = lo[1];
-    if (ctv0) ctv0.value = lo[2];
-    if (cth1) cth1.value = hi[0];
-    if (cts1) cts1.value = hi[1];
-    if (ctv1) ctv1.value = hi[2];
-    if (ctf) ctf.value = s.colorTriggerbotFov != null ? s.colorTriggerbotFov : 120;
-    if (ctcs) ctcs.checked = !!s.colorTriggerbotCenterOnScreen;
-    if (ctd) ctd.value = s.colorTriggerbotDistance != null ? s.colorTriggerbotDistance : 25;
-    if (ctpl) ctpl.value = s.colorTriggerbotPollMs != null ? s.colorTriggerbotPollMs : 16;
-    if (ctcd) ctcd.value = s.colorTriggerbotCooldownMs != null ? s.colorTriggerbotCooldownMs : 50;
-    if (ctch) ctch.value = s.colorTriggerbotClickHoldMs != null ? s.colorTriggerbotClickHoldMs : 50;
-    if (ctcm) ctcm.value = s.colorTriggerbotClickMode || 'single';
-    if (ctaim) ctaim.checked = !!s.colorTriggerbotAimbotEnabled;
-    if (ctas) ctas.value = s.colorTriggerbotAimSpeed != null ? s.colorTriggerbotAimSpeed : 0.35;
-    if (ctams) ctams.value = s.colorTriggerbotAimMaxStep != null ? s.colorTriggerbotAimMaxStep : 40;
-    if (ctaox) ctaox.value = s.colorTriggerbotAimOffsetX != null ? s.colorTriggerbotAimOffsetX : 0;
-    if (ctaoy) ctaoy.value = s.colorTriggerbotAimOffsetY != null ? s.colorTriggerbotAimOffsetY : 0;
-    if (cta) cta.value = s.colorTriggerbotAction || 'leftClick';
-    if (cthold) cthold.checked = !!s.colorTriggerbotHoldWhileOnTarget;
-    if (ctdbg) ctdbg.checked = !!s.colorTriggerbotDebug;
-    if (cttoe) cttoe.checked = !!s.colorTriggerbotToggleBindEnabled;
-    if (cttob) cttob.value = s.colorTriggerbotToggleBindKey || '';
-    syncColorTriggerbotPanels();
-    try {
-      const ct = await window.kyrun.getColorTriggerbotState();
-      syncColorTriggerbotEnabledUi(ct);
-    } catch {
-      syncColorTriggerbotEnabledUi({ active: false, enabled: false });
-    }
+    loadColorTriggerbotToForm(s);
+    await refreshColorTriggerbotEnabledFromMain();
     setColorTriggerbotSaveStatus('saved');
     syncTriggersToggleBindUi();
     syncProfileTtsSettingsUi();
@@ -2795,6 +3128,7 @@ function wireSettingsControls() {
     '#setting-color-trigger-debug',
     '#setting-color-trigger-hold',
     '#setting-color-trigger-aimbot',
+    '#setting-color-trigger-prediction',
     '#setting-color-trigger-center-screen',
     '#setting-color-trigger-toggle-enabled'
   ];
@@ -2811,6 +3145,22 @@ function wireSettingsControls() {
   if (saveColorbotBtn) {
     saveColorbotBtn.onclick = () => { void saveColorTriggerbotSettings({ toast: true }); };
   }
+
+  const colorbotProfileSel = $('#setting-color-trigger-profile');
+  if (colorbotProfileSel) {
+    colorbotProfileSel.addEventListener('change', () => {
+      if (colorbotProfileSelectSyncing) return;
+      void switchColorbotProfile(colorbotProfileSel.value);
+    });
+  }
+  const colorbotProfileNew = $('#btn-colorbot-profile-new');
+  if (colorbotProfileNew) colorbotProfileNew.onclick = () => showNewColorbotProfileModal();
+  const colorbotProfileRename = $('#btn-colorbot-profile-rename');
+  if (colorbotProfileRename) colorbotProfileRename.onclick = () => showRenameColorbotProfileModal();
+  const colorbotProfileDup = $('#btn-colorbot-profile-dup');
+  if (colorbotProfileDup) colorbotProfileDup.onclick = () => { void duplicateColorbotProfile(); };
+  const colorbotProfileDel = $('#btn-colorbot-profile-del');
+  if (colorbotProfileDel) colorbotProfileDel.onclick = () => { void deleteColorbotProfile(); };
 
   const cts = $('#setting-color-trigger-source');
   if (cts) {
@@ -2830,7 +3180,8 @@ function wireSettingsControls() {
     '#setting-color-trigger-fov', '#setting-color-trigger-distance',
     '#setting-color-trigger-poll', '#setting-color-trigger-cooldown', '#setting-color-trigger-click-hold',
     '#setting-color-trigger-aim-speed', '#setting-color-trigger-aim-max-step',
-    '#setting-color-trigger-aim-offset-x', '#setting-color-trigger-aim-offset-y'
+    '#setting-color-trigger-aim-offset-x', '#setting-color-trigger-aim-offset-y',
+    '#setting-color-trigger-prediction-lead', '#setting-color-trigger-prediction-max'
   ];
   colorTriggerInputs.forEach(sel => {
     const el = $(sel);
@@ -3126,6 +3477,7 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
     state.isAnonymous = await window.kyrun.getAnonymousStatus();
     const settings = await window.kyrun.getSettings();
     state.streamerMode = !!settings.streamerMode;
+    loadColorTriggerbotToForm(settings);
   } catch {}
   wireSettingsControls();
   updateStatusBar();
