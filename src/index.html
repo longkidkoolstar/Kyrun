@@ -33,6 +33,10 @@
           <span class="titlebar__status-dot titlebar__status-dot--inactive" id="triggers-dot"></span>
           <span id="triggers-status-text">Hotkeys: Off</span>
         </div>
+        <div class="titlebar__status-item titlebar__status-item--readonly" id="status-color-trigger" title="Color triggerbot scans screen center when enabled in Settings.">
+          <span class="titlebar__status-dot titlebar__status-dot--inactive" id="color-trigger-dot"></span>
+          <span id="color-trigger-status-text">Color: Off</span>
+        </div>
       </div>
       <div class="titlebar__controls">
         <button class="titlebar__btn" id="btn-minimize" title="Minimize">─</button>
@@ -381,6 +385,223 @@
             </div>
           </div>
 
+          <div class="settings-view__group" id="color-triggerbot-settings">
+            <div class="settings-view__group-title">Color triggerbot</div>
+            <div class="settings-view__row color-triggerbot-save-row">
+              <button type="button" class="btn btn--primary" id="btn-color-trigger-save">Save colorbot settings</button>
+              <span class="color-triggerbot-save-status" id="color-trigger-save-status">Changes save automatically</span>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Enable color triggerbot</div>
+                <div class="settings-view__row-desc">When on, scans a region around screen center and left-clicks when the target color is within trigger distance. Primary monitor only; may not work in exclusive fullscreen or anti-cheat games.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-color-trigger-enabled">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Colorbot toggle bind</div>
+                <div class="settings-view__row-desc">Global key or mouse button to turn the color triggerbot on or off (works even while it is off).</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-color-trigger-toggle-enabled">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Colorbot toggle shortcut</div>
+                <div class="settings-view__row-desc">Click the field, then press a key or mouse button. Right-click to clear.</div>
+              </div>
+              <input type="text" class="properties-panel__input" style="width:160px;cursor:pointer;" id="setting-color-trigger-toggle-bind" readonly placeholder="Not set" title="Click to bind · Right-click to clear">
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Color source</div>
+                <div class="settings-view__row-desc">Preset uses RivalsX-style HSV bands; custom modes use RGB tolerance or manual HSV bounds.</div>
+              </div>
+              <select class="properties-panel__input" id="setting-color-trigger-source" style="width:180px">
+                <option value="preset">Preset (HSV)</option>
+                <option value="customRgb">Custom RGB</option>
+                <option value="customHsv">Custom HSV</option>
+              </select>
+            </div>
+            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-preset-panel">
+              <div>
+                <div class="settings-view__row-label">Enemy color preset</div>
+              </div>
+              <select class="properties-panel__input" id="setting-color-trigger-preset" style="width:180px">
+                <option value="bluegreen">Blue-green</option>
+                <option value="pinkishpurple">Pinkish purple</option>
+                <option value="green">Green</option>
+                <option value="pink">Pink</option>
+              </select>
+            </div>
+            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-rgb-panel" hidden>
+              <div>
+                <div class="settings-view__row-label">Target color</div>
+                <div class="settings-view__row-desc">Pick from screen or enter hex (RRGGBB).</div>
+              </div>
+              <div class="color-triggerbot-rgb-row">
+                <input type="text" class="properties-panel__input" id="setting-color-trigger-color" style="width:90px" maxlength="6" placeholder="FF0000">
+                <input type="number" class="properties-panel__input" id="setting-color-trigger-tolerance" style="width:64px" min="0" max="255" title="Tolerance">
+                <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-rgb">Pick (cursor)</button>
+                <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-rgb-shot">Pick (screenshot)</button>
+              </div>
+            </div>
+            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-hsv-panel" hidden>
+              <div>
+                <div class="settings-view__row-label">HSV range (OpenCV)</div>
+                <div class="settings-view__row-desc">H 0-179, S and V 0-255. Pick fills center plus/minus slack.</div>
+              </div>
+              <div class="color-triggerbot-hsv-grid">
+                <label>H min <input type="number" class="properties-panel__input" id="setting-color-trigger-h0" min="0" max="179"></label>
+                <label>S min <input type="number" class="properties-panel__input" id="setting-color-trigger-s0" min="0" max="255"></label>
+                <label>V min <input type="number" class="properties-panel__input" id="setting-color-trigger-v0" min="0" max="255"></label>
+                <label>H max <input type="number" class="properties-panel__input" id="setting-color-trigger-h1" min="0" max="179"></label>
+                <label>S max <input type="number" class="properties-panel__input" id="setting-color-trigger-s1" min="0" max="255"></label>
+                <label>V max <input type="number" class="properties-panel__input" id="setting-color-trigger-v1" min="0" max="255"></label>
+              </div>
+              <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-hsv" style="margin-top:8px">Pick HSV (cursor)</button>
+              <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-hsv-shot" style="margin-top:8px">Pick HSV (screenshot)</button>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Action on trigger</div>
+                <div class="settings-view__row-desc">What to do when a match is found near center. Use None while debugging.</div>
+              </div>
+              <select class="properties-panel__input" id="setting-color-trigger-action" style="width:180px">
+                <option value="leftClick">Left click</option>
+                <option value="rightClick">Right click</option>
+                <option value="middleClick">Middle click</option>
+                <option value="none">None (detect only)</option>
+              </select>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Hold while on target</div>
+                <div class="settings-view__row-desc">Keep the chosen mouse button held while the color is within trigger distance; release when it leaves. Off uses tap click modes below.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-color-trigger-hold">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div id="color-trigger-click-panel" class="color-triggerbot-panel">
+              <div class="settings-view__row">
+                <div>
+                  <div class="settings-view__row-label">Click mode</div>
+                  <div class="settings-view__row-desc">Single respects cooldown; rapid clicks every poll while on target; edge fires once when a target enters range.</div>
+                </div>
+                <select class="properties-panel__input" id="setting-color-trigger-click-mode" style="width:220px">
+                  <option value="single">Single (cooldown)</option>
+                  <option value="rapid">Rapid (while on target)</option>
+                  <option value="edge">Edge (on enter range)</option>
+                </select>
+              </div>
+              <div class="settings-view__row">
+                <div>
+                  <div class="settings-view__row-label">Click cooldown (ms)</div>
+                  <div class="settings-view__row-desc">Single: min time between clicks. Rapid: 0 = fastest. Edge: ignored.</div>
+                </div>
+                <input type="number" class="properties-panel__input" id="setting-color-trigger-cooldown" style="width:80px" min="0" max="5000">
+              </div>
+              <div class="settings-view__row">
+                <div>
+                  <div class="settings-view__row-label">Click hold (ms)</div>
+                  <div class="settings-view__row-desc">How long the mouse button stays down before release on tap clicks (not hold-while-on-target mode).</div>
+                </div>
+                <input type="number" class="properties-panel__input" id="setting-color-trigger-click-hold" style="width:80px" min="0" max="500" value="50">
+              </div>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Aimbot mode</div>
+                <div class="settings-view__row-desc">When a match is in range, smoothly move the mouse toward the closest matching pixel in the FOV.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-color-trigger-aimbot">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div id="color-trigger-aimbot-panel" class="color-triggerbot-panel" hidden>
+              <div class="settings-view__row">
+                <div>
+                  <div class="settings-view__row-label">Aim speed</div>
+                  <div class="settings-view__row-desc">Try 0.2–0.35 for smooth tracking; 1 is fast. Use Center FOV on screen with aimbot.</div>
+                </div>
+                <input type="number" class="properties-panel__input" id="setting-color-trigger-aim-speed" style="width:80px" min="0.05" max="1" step="0.05" value="0.35">
+              </div>
+              <div class="settings-view__row">
+                <div>
+                  <div class="settings-view__row-label">Aim max step (px/tick)</div>
+                  <div class="settings-view__row-desc">Max pixels moved per poll. Default 40 prevents overshoot at high speed.</div>
+                </div>
+                <input type="number" class="properties-panel__input" id="setting-color-trigger-aim-max-step" style="width:80px" min="4" max="200" value="40">
+              </div>
+              <div class="settings-view__row">
+                <div>
+                  <div class="settings-view__row-label">Aim offset X / Y</div>
+                  <div class="settings-view__row-desc">Extra pixels after aim (e.g. head offset).</div>
+                </div>
+                <div class="color-triggerbot-rgb-row">
+                  <input type="number" class="properties-panel__input" id="setting-color-trigger-aim-offset-x" style="width:72px" value="0">
+                  <input type="number" class="properties-panel__input" id="setting-color-trigger-aim-offset-y" style="width:72px" value="0">
+                </div>
+              </div>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Debug mode</div>
+                <div class="settings-view__row-desc">Show live scan stats below. Use Probe now for a one-shot test.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-color-trigger-debug">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <button type="button" class="btn btn--secondary" id="btn-color-trigger-probe">Probe now</button>
+            </div>
+            <div class="color-triggerbot-debug" id="color-trigger-debug-panel" hidden>
+              <div class="color-triggerbot-debug__title">Debug output</div>
+              <pre class="color-triggerbot-debug__log" id="color-trigger-debug-log">Enable debug or click Probe now.</pre>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Center FOV on screen</div>
+                <div class="settings-view__row-desc">On: FOV is fixed at the primary monitor center (crosshair). Off: FOV follows the mouse cursor.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-color-trigger-center-screen">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">FOV size (px)</div>
+                <div class="settings-view__row-desc">Square capture region size; trigger distance is measured from its center.</div>
+              </div>
+              <input type="number" class="properties-panel__input" id="setting-color-trigger-fov" style="width:80px" min="20" max="400">
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Trigger distance (px)</div>
+                <div class="settings-view__row-desc">Max distance from center to matching pixel to fire click.</div>
+              </div>
+              <input type="number" class="properties-panel__input" id="setting-color-trigger-distance" style="width:80px" min="1" max="200">
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Poll interval (ms)</div>
+              </div>
+              <input type="number" class="properties-panel__input" id="setting-color-trigger-poll" style="width:80px" min="8" max="100">
+            </div>
+
+          </div>
           <div class="settings-view__group">
             <div class="settings-view__group-title">Anonymous Mode</div>
             <div class="settings-view__row">
@@ -464,6 +685,16 @@
               </div>
               <label class="toggle-switch">
                 <input type="checkbox" id="setting-hotkeys-tts-enabled" checked>
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Color bot on/off speech</div>
+                <div class="settings-view__row-desc">Speak when the color triggerbot is enabled or disabled</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-colorbot-tts-enabled" checked>
                 <span class="toggle-switch__slider"></span>
               </label>
             </div>

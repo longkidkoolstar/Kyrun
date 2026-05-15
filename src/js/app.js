@@ -109,12 +109,14 @@ function syncProfileTtsSettingsUi() {
   const tray = $('#setting-profile-tts-tray');
   const sup = $('#setting-profile-tts-suppress-privacy');
   const hk = $('#setting-hotkeys-tts-enabled');
+  const cb = $('#setting-colorbot-tts-enabled');
   const disabled = !!(en && !en.checked);
   if (hot) hot.disabled = disabled;
   if (ui) ui.disabled = disabled;
   if (tray) tray.disabled = disabled;
   if (sup) sup.disabled = disabled;
   if (hk) hk.disabled = disabled;
+  if (cb) cb.disabled = disabled;
 }
 
 async function speakProfileName(profileName, source) {
@@ -148,6 +150,23 @@ async function speakHotkeysState(enabled) {
   if (!settings || settings.profileTtsEnabled === false || settings.hotkeysTtsEnabled === false) return;
   if (settings.profileTtsSuppressPrivacy && privacyActive()) return;
   const text = enabled ? 'Hotkeys enabled' : 'Hotkeys disabled';
+  try {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  } catch {}
+}
+
+async function speakColorbotState(enabled) {
+  if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== 'function') return;
+  let settings;
+  try {
+    settings = await window.kyrun.getSettings();
+  } catch {
+    return;
+  }
+  if (!settings || settings.profileTtsEnabled === false || settings.colorbotTtsEnabled === false) return;
+  if (settings.profileTtsSuppressPrivacy && privacyActive()) return;
+  const text = enabled ? 'Color bot enabled' : 'Color bot disabled';
   try {
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
@@ -668,6 +687,8 @@ async function openMacro(item) {
 let suppressHotkeyTriggersUntil = 0;
 let suppressNextProfileChangedTts = false;
 let hotkeysTtsReady = false;
+let colorbotTtsReady = false;
+let lastColorbotEnabled = false;
 function scheduleReloadProfileTriggers(delayMs = 400) {
   suppressHotkeyTriggersUntil = Date.now() + delayMs + 350;
   setTimeout(() => { void reloadProfileTriggers(); }, delayMs);
@@ -1927,6 +1948,8 @@ async function reloadProfileTriggers() {
   if (firstHotkeyError) showToast(firstHotkeyError, 'error');
   } finally {
     try { await window.kyrun.reapplyTriggersToggleBind(); } catch {}
+    try { await window.kyrun.reapplyColorbotToggleBind(); } catch {}
+    // reapply both (reloadProfileTriggers finally already does; keep explicit)
   }
 }
 
@@ -2212,6 +2235,431 @@ function syncTriggersToggleBindUi() {
   if (bind) bind.disabled = !!(en && !en.checked);
 }
 
+function syncColorTriggerbotToggleBindUi() {
+  const en = $('#setting-color-trigger-toggle-enabled');
+  const bind = $('#setting-color-trigger-toggle-bind');
+  if (bind) bind.disabled = !!(en && !en.checked);
+}
+
+function syncColorTriggerbotEnabledUi(data) {
+  const active = !!(data && data.active);
+  const enabled = data && data.enabled != null ? !!data.enabled : active;
+  updateColorTriggerTitlebar(active, enabled);
+  const cte = $('#setting-color-trigger-enabled');
+  if (cte) cte.checked = enabled;
+}
+
+function rgbToHsvClient(r, g, b) {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  const s = max === 0 ? 0 : d / max;
+  const v = max;
+  if (d !== 0) {
+    if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6;
+    else if (max === gn) h = ((bn - rn) / d + 2) / 6;
+    else h = ((rn - gn) / d + 4) / 6;
+  }
+  return {
+    h: Math.round(h * 179),
+    s: Math.round(s * 255),
+    v: Math.round(v * 255)
+  };
+}
+
+function parseHexColorClient(hex) {
+  const raw = String(hex ?? '').trim().replace(/^#/, '');
+  if (!/^[\da-fA-F]{6}$/.test(raw)) return null;
+  return {
+    r: parseInt(raw.slice(0, 2), 16),
+    g: parseInt(raw.slice(2, 4), 16),
+    b: parseInt(raw.slice(4, 6), 16)
+  };
+}
+
+function syncColorTriggerbotPanels() {
+  const sourceEl = $('#setting-color-trigger-source');
+  const source = sourceEl ? sourceEl.value : 'preset';
+  const preset = $('#color-trigger-preset-panel');
+  const rgb = $('#color-trigger-rgb-panel');
+  const hsv = $('#color-trigger-hsv-panel');
+  if (preset) preset.hidden = source !== 'preset';
+  if (rgb) rgb.hidden = source !== 'customRgb';
+  if (hsv) hsv.hidden = source !== 'customHsv';
+  const holdOn = !!($('#setting-color-trigger-hold')?.checked);
+  const clickPanel = $('#color-trigger-click-panel');
+  if (clickPanel) clickPanel.hidden = holdOn;
+  const aimbotOn = !!($('#setting-color-trigger-aimbot')?.checked);
+  const aimbotPanel = $('#color-trigger-aimbot-panel');
+  if (aimbotPanel) aimbotPanel.hidden = !aimbotOn;
+  syncColorTriggerDebugPanel();
+  syncColorTriggerbotToggleBindUi();
+}
+
+function syncColorTriggerDebugPanel() {
+  const debugOn = !!($('#setting-color-trigger-debug')?.checked);
+  const panel = $('#color-trigger-debug-panel');
+  if (panel) panel.hidden = !debugOn;
+}
+
+function formatColorTriggerDebug(data) {
+  if (!data) return 'No data';
+  const lines = [];
+  const ts = data.ts ? new Date(data.ts).toLocaleTimeString() : '';
+  if (ts) lines.push(`[${ts}]`);
+  if (data.startupProbe) lines.push('— startup probe —');
+  if (data.fired) lines.push('FIRED action');
+  if (data.skipped) lines.push(`Skipped: ${data.skipped}`);
+  if (data.error) lines.push(`Error: ${data.error}`);
+  if (data.fireError) lines.push(`Fire error: ${data.fireError}`);
+  if (data.captureOk === false) lines.push('Capture: FAILED');
+  else if (data.captureOk === true) lines.push('Capture: OK');
+  if (data.region) {
+    const r = data.region;
+    const centerMode = r.centerOnScreen ? 'screen center' : 'mouse cursor';
+    lines.push(`Region: ${r.left},${r.top} ${r.width}x${r.height} (screen ${r.screenWidth}x${r.screenHeight} @${r.scaleFactor}x)`);
+    lines.push(`FOV center: ${centerMode} (${r.centerX},${r.centerY})`);
+  }
+  if (data.centerOnScreen != null) lines.push(`Center on screen: ${data.centerOnScreen ? 'yes' : 'no'}`);
+  if (data.centerHex != null) {
+    const hsv = data.centerHsv;
+    const hsvTxt = hsv ? ` HSV ${hsv.h},${hsv.s},${hsv.v}` : '';
+    lines.push(`Center pixel: #${data.centerHex}${hsvTxt} match=${!!data.centerMatch}`);
+  }
+  if (data.matchCount != null) lines.push(`Matching pixels: ${data.matchCount}`);
+  if (data.minDist != null && data.minDist >= 0) lines.push(`Closest match: ${data.minDist.toFixed(1)}px`);
+  else if (data.minDist === -1) lines.push('Closest match: none');
+  if (data.triggerDistance != null) lines.push(`Trigger distance: ${data.triggerDistance}px`);
+  if (data.wouldTrigger != null) lines.push(`Would trigger: ${data.wouldTrigger ? 'YES' : 'no'}`);
+  if (data.macroRunning) lines.push('Macro running: yes (trigger blocked)');
+  if (data.action) lines.push(`Action: ${data.action}`);
+  if (data.holdWhileOnTarget != null) lines.push(`Hold on target: ${data.holdWhileOnTarget ? 'yes' : 'no'}`);
+  if (data.clickMode) lines.push(`Click mode: ${data.clickMode}`);
+  if (data.aimbotEnabled != null) lines.push(`Aimbot: ${data.aimbotEnabled ? 'on' : 'off'}`);
+  if (data.aimMoved) lines.push('Aim: moved toward target');
+  if (data.aimDelta) lines.push(`Aim delta: ${data.aimDelta.x},${data.aimDelta.y}`);
+  if (data.aimTarget) lines.push(`Aim toward: ${data.aimTarget.x},${data.aimTarget.y}`);
+  if (data.clickQueued) lines.push('Click: queued (down, up after hold)');
+  if (data.clickHoldMs != null) lines.push(`Click hold: ${data.clickHoldMs}ms`);
+  if (data.cooldownMs != null) lines.push(`Cooldown: ${data.cooldownMs}ms`);
+  if (data.msSinceLastAction != null) lines.push(`Ms since last action: ${data.msSinceLastAction}`);
+  if (data.buttonHeld) lines.push(`Button held: ${data.buttonHeld}`);
+  if (data.holdPressed) lines.push('Hold: pressed');
+  if (data.holdReleased) lines.push('Hold: released');
+  if (data.fallbackCenterHex) lines.push(`GetPixel fallback center: #${data.fallbackCenterHex}`);
+  if (data.source) lines.push(`Color source: ${data.source}`);
+  if (data.preset) lines.push(`Preset: ${data.preset}`);
+  if (data.targetColor != null) {
+    lines.push(`Target RGB: #${data.targetColor} tol=${data.tolerance} valid=${data.targetColorValid !== false}`);
+  }
+  if (data.hsvLower) lines.push(`HSV lower: ${data.hsvLower.join(',')}`);
+  if (data.hsvUpper) lines.push(`HSV upper: ${data.hsvUpper.join(',')}`);
+  return lines.join('\n') || JSON.stringify(data, null, 2);
+}
+
+function appendColorTriggerDebugLog(data) {
+  const log = $('#color-trigger-debug-log');
+  if (!log) return;
+  const block = formatColorTriggerDebug(data);
+  const prev = log.textContent === 'Enable debug or click Probe now.' ? '' : log.textContent + '\n\n';
+  const combined = (prev + block).split('\n\n');
+  log.textContent = combined.slice(-12).join('\n\n');
+  log.scrollTop = log.scrollHeight;
+}
+
+async function applyColorTriggerHexFromPicker(hex, { fillHsv = false } = {}) {
+  const rgb = parseHexColorClient(hex);
+  if (!rgb) {
+    showToast('Invalid color', 'error');
+    return;
+  }
+  const settings = await window.kyrun.getSettings();
+  if (fillHsv) {
+    const { h, s, v } = rgbToHsvClient(rgb.r, rgb.g, rgb.b);
+    settings.colorTriggerbotHsvLower = [Math.max(0, h - 5), Math.max(0, s - 40), Math.max(0, v - 30)];
+    settings.colorTriggerbotHsvUpper = [Math.min(179, h + 5), Math.min(255, s + 40), Math.min(255, v + 30)];
+    const h0 = $('#setting-color-trigger-h0');
+    const s0 = $('#setting-color-trigger-s0');
+    const v0 = $('#setting-color-trigger-v0');
+    const h1 = $('#setting-color-trigger-h1');
+    const s1 = $('#setting-color-trigger-s1');
+    const v1 = $('#setting-color-trigger-v1');
+    if (h0) h0.value = settings.colorTriggerbotHsvLower[0];
+    if (s0) s0.value = settings.colorTriggerbotHsvLower[1];
+    if (v0) v0.value = settings.colorTriggerbotHsvLower[2];
+    if (h1) h1.value = settings.colorTriggerbotHsvUpper[0];
+    if (s1) s1.value = settings.colorTriggerbotHsvUpper[1];
+    if (v1) v1.value = settings.colorTriggerbotHsvUpper[2];
+  } else {
+    settings.colorTriggerbotColor = hex.toUpperCase();
+    const colorEl = $('#setting-color-trigger-color');
+    if (colorEl) colorEl.value = hex.toUpperCase();
+  }
+  readColorTriggerbotFromForm(settings);
+    await window.kyrun.saveSettings(settings);
+    setColorTriggerbotSaveStatus('saved');
+    showToast(fillHsv ? `HSV range set from #${hex}` : `Color #${hex} saved`, 'success');
+}
+
+function openColorTriggerScreenshotPicker(capture, { fillHsv = false } = {}) {
+  if (!capture?.imageDataUrl) {
+    showToast('Screenshot capture failed', 'error');
+    return;
+  }
+  showModal(
+    'Pick color for triggerbot',
+    `<div class="screen-picker">
+      <p class="screen-picker__hint">Click the enemy/outline color on this frozen screenshot.</p>
+      <div class="screen-picker__meta">
+        <div><strong>Hover:</strong> <span id="screen-picker-hover">Move over the image</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><strong>Color:</strong> <span class="screen-picker__swatch" id="screen-picker-swatch"></span> <code id="screen-picker-color">------</code></div>
+      </div>
+      <div class="screen-picker__viewport">
+        <img id="screen-picker-image" class="screen-picker__image" src="${capture.imageDataUrl}" alt="Captured screen" draggable="false">
+      </div>
+    </div>`,
+    [{ label: 'Cancel', type: 'secondary', action: () => {} }]
+  );
+  setModalPresentation({ width: 'min(96vw, 1100px)', maxWidth: 'min(96vw, 1100px)', maxHeight: '92vh' });
+
+  setTimeout(() => {
+    const img = document.getElementById('screen-picker-image');
+    const hover = document.getElementById('screen-picker-hover');
+    const swatch = document.getElementById('screen-picker-swatch');
+    const colorText = document.getElementById('screen-picker-color');
+    if (!img || !hover || !swatch || !colorText) return;
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let imageReady = false;
+
+    const paintImage = () => {
+      if (!ctx || !img.naturalWidth || !img.naturalHeight) return;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+      imageReady = true;
+    };
+
+    const sampleFromEvent = e => {
+      if (!imageReady || !ctx) return null;
+      const rect = img.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const relX = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const relY = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+      const pixelX = Math.min(img.naturalWidth - 1, Math.max(0, Math.floor(relX * img.naturalWidth)));
+      const pixelY = Math.min(img.naturalHeight - 1, Math.max(0, Math.floor(relY * img.naturalHeight)));
+      const [r, g, b] = ctx.getImageData(pixelX, pixelY, 1, 1).data;
+      const hex = [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('').toUpperCase();
+      return { pixelX, pixelY, hex };
+    };
+
+    const updatePreview = e => {
+      const sample = sampleFromEvent(e);
+      if (!sample) return;
+      hover.textContent = `Pixel ${sample.pixelX}, ${sample.pixelY}`;
+      swatch.style.background = `#${sample.hex}`;
+      colorText.textContent = `#${sample.hex}`;
+    };
+
+    const onClick = async e => {
+      const sample = sampleFromEvent(e);
+      if (!sample) return;
+      hideModal();
+      await applyColorTriggerHexFromPicker(sample.hex, { fillHsv });
+    };
+
+    const cleanup = () => {
+      img.removeEventListener('mousemove', updatePreview);
+      img.removeEventListener('click', onClick);
+      img.removeEventListener('load', paintImage);
+    };
+    setModalCleanup(cleanup);
+    img.addEventListener('mousemove', updatePreview);
+    img.addEventListener('click', onClick);
+    img.addEventListener('load', paintImage);
+    if (img.complete) paintImage();
+  }, 0);
+}
+
+async function pickColorTriggerFromScreenshot({ fillHsv = false } = {}) {
+  try {
+    const capture = await window.kyrun.captureScreenFrame();
+    if (!capture?.success) {
+      showToast(capture?.error || 'Screenshot capture failed', 'error');
+      return;
+    }
+    openColorTriggerScreenshotPicker(capture, { fillHsv });
+  } catch {
+    showToast('Screenshot capture failed', 'error');
+  }
+}
+
+async function runColorTriggerProbe() {
+  const panel = $('#color-trigger-debug-panel');
+  if (panel) panel.hidden = false;
+  try {
+    await saveColorTriggerbotSettings();
+    const result = await window.kyrun.probeColorTriggerbot();
+    appendColorTriggerDebugLog({ ts: Date.now(), ...result });
+    if (result.ok && result.wouldTrigger) {
+      showToast('Probe: would trigger now', 'success');
+    } else if (result.ok) {
+      showToast('Probe: scan OK but no trigger (check color/distance)', 'info');
+    } else {
+      showToast(result.error || 'Probe failed', 'error');
+    }
+  } catch (e) {
+    showToast('Probe failed', 'error');
+  }
+}
+
+function readColorTriggerbotFromForm(settings) {
+  const en = $('#setting-color-trigger-enabled');
+  const src = $('#setting-color-trigger-source');
+  const preset = $('#setting-color-trigger-preset');
+  const color = $('#setting-color-trigger-color');
+  const tol = $('#setting-color-trigger-tolerance');
+  const h0 = $('#setting-color-trigger-h0');
+  const s0 = $('#setting-color-trigger-s0');
+  const v0 = $('#setting-color-trigger-v0');
+  const h1 = $('#setting-color-trigger-h1');
+  const s1 = $('#setting-color-trigger-s1');
+  const v1 = $('#setting-color-trigger-v1');
+  const fov = $('#setting-color-trigger-fov');
+  const centerScreen = $('#setting-color-trigger-center-screen');
+  const dist = $('#setting-color-trigger-distance');
+  const poll = $('#setting-color-trigger-poll');
+  const cd = $('#setting-color-trigger-cooldown');
+  const clickMode = $('#setting-color-trigger-click-mode');
+  const aimbot = $('#setting-color-trigger-aimbot');
+  const aimSpeed = $('#setting-color-trigger-aim-speed');
+  const aimMaxStep = $('#setting-color-trigger-aim-max-step');
+  const aimOx = $('#setting-color-trigger-aim-offset-x');
+  const aimOy = $('#setting-color-trigger-aim-offset-y');
+  const act = $('#setting-color-trigger-action');
+  const hold = $('#setting-color-trigger-hold');
+  const dbg = $('#setting-color-trigger-debug');
+  const toggleEn = $('#setting-color-trigger-toggle-enabled');
+
+  settings.colorTriggerbotEnabled = !!(en && en.checked);
+  settings.colorTriggerbotToggleBindEnabled = !!(toggleEn && toggleEn.checked);
+  settings.colorTriggerbotSource = src ? src.value : 'preset';
+  settings.colorTriggerbotPreset = preset ? preset.value : 'bluegreen';
+  settings.colorTriggerbotColor = (color ? color.value : 'FF0000').replace(/^#/, '').toUpperCase();
+  settings.colorTriggerbotTolerance = Math.min(255, Math.max(0, parseInt(tol?.value, 10) || 10));
+  settings.colorTriggerbotHsvLower = [
+    parseInt(h0?.value, 10) || 0,
+    parseInt(s0?.value, 10) || 0,
+    parseInt(v0?.value, 10) || 0
+  ];
+  settings.colorTriggerbotHsvUpper = [
+    parseInt(h1?.value, 10) || 179,
+    parseInt(s1?.value, 10) || 255,
+    parseInt(v1?.value, 10) || 255
+  ];
+  settings.colorTriggerbotFov = Math.min(400, Math.max(20, parseInt(fov?.value, 10) || 120));
+  settings.colorTriggerbotCenterOnScreen = !!(centerScreen && centerScreen.checked);
+  settings.colorTriggerbotDistance = Math.min(200, Math.max(1, parseInt(dist?.value, 10) || 25));
+  settings.colorTriggerbotPollMs = Math.min(100, Math.max(8, parseInt(poll?.value, 10) || 16));
+  settings.colorTriggerbotCooldownMs = Math.max(0, parseInt(cd?.value, 10) || 50);
+  const clickHold = $('#setting-color-trigger-click-hold');
+  settings.colorTriggerbotClickHoldMs = Math.max(0, parseInt(clickHold?.value, 10) ?? 50);
+  const mode = clickMode ? clickMode.value : 'single';
+  settings.colorTriggerbotClickMode = ['single', 'rapid', 'edge'].includes(mode) ? mode : 'single';
+  settings.colorTriggerbotAimbotEnabled = !!(aimbot && aimbot.checked);
+  settings.colorTriggerbotAimSpeed = Math.min(1, Math.max(0.05, parseFloat(aimSpeed?.value) || 0.35));
+  settings.colorTriggerbotAimMaxStep = Math.min(200, Math.max(4, Math.round(parseFloat(aimMaxStep?.value) || 40)));
+  settings.colorTriggerbotAimOffsetX = Math.round(parseFloat(aimOx?.value) || 0);
+  settings.colorTriggerbotAimOffsetY = Math.round(parseFloat(aimOy?.value) || 0);
+  settings.colorTriggerbotAction = act ? act.value : 'leftClick';
+  settings.colorTriggerbotHoldWhileOnTarget = !!(hold && hold.checked);
+  settings.colorTriggerbotDebug = !!(dbg && dbg.checked);
+}
+
+let colorTriggerbotSaveDebounce = null;
+
+function setColorTriggerbotSaveStatus(mode) {
+  const el = $('#color-trigger-save-status');
+  if (!el) return;
+  el.classList.remove('color-triggerbot-save-status--saved', 'color-triggerbot-save-status--unsaved', 'color-triggerbot-save-status--error');
+  if (mode === 'saved') {
+    el.textContent = 'Saved';
+    el.classList.add('color-triggerbot-save-status--saved');
+  } else if (mode === 'unsaved') {
+    el.textContent = 'Unsaved changes';
+    el.classList.add('color-triggerbot-save-status--unsaved');
+  } else if (mode === 'error') {
+    el.textContent = 'Save failed';
+    el.classList.add('color-triggerbot-save-status--error');
+  } else {
+    el.textContent = 'Changes save automatically';
+  }
+}
+
+function scheduleColorTriggerbotSave() {
+  setColorTriggerbotSaveStatus('unsaved');
+  if (colorTriggerbotSaveDebounce) clearTimeout(colorTriggerbotSaveDebounce);
+  colorTriggerbotSaveDebounce = setTimeout(() => {
+    colorTriggerbotSaveDebounce = null;
+    void saveColorTriggerbotSettings({ toast: false });
+  }, 450);
+}
+
+async function saveColorTriggerbotSettings(opts = {}) {
+  const showToastOnSave = opts.toast === true;
+  try {
+    const settings = await window.kyrun.getSettings();
+    readColorTriggerbotFromForm(settings);
+    const enabled = !!($('#setting-color-trigger-enabled')?.checked);
+    settings.colorTriggerbotEnabled = enabled;
+    await window.kyrun.saveSettings(settings);
+    updateColorTriggerTitlebar(enabled, enabled);
+    syncColorTriggerDebugPanel();
+    setColorTriggerbotSaveStatus('saved');
+    if (showToastOnSave) showToast('Color triggerbot settings saved', 'success');
+    return true;
+  } catch {
+    setColorTriggerbotSaveStatus('error');
+    if (showToastOnSave) showToast('Failed to save colorbot settings', 'error');
+    return false;
+  }
+}
+
+async function pickColorTriggerbotSample({ fillHsv = false } = {}) {
+  if (!state.hasRobot) {
+    showToast('Native input required to pick colors', 'error');
+    return;
+  }
+  showToast('Move cursor to target pixel, then wait…', 'info');
+  await new Promise(r => setTimeout(r, 1200));
+  try {
+    const pos = await window.kyrun.getMousePosition();
+    const hex = await window.kyrun.getPixelColor(pos.x, pos.y);
+    await applyColorTriggerHexFromPicker(hex, { fillHsv });
+  } catch {
+    showToast('Screen capture failed', 'error');
+  }
+}
+
+function updateColorTriggerTitlebar(active, enabled) {
+  const dot = $('#color-trigger-dot');
+  const text = $('#color-trigger-status-text');
+  if (!dot || !text) return;
+  const on = enabled != null ? !!enabled : !!active;
+  if (on) {
+    dot.className = 'titlebar__status-dot titlebar__status-dot--active';
+    text.textContent = privacyActive() ? 'On' : 'Color: On';
+  } else {
+    dot.className = 'titlebar__status-dot titlebar__status-dot--inactive';
+    text.textContent = privacyActive() ? 'Off' : 'Color: Off';
+  }
+}
+
 async function loadSettingsToForm() {
   try {
     const s = await window.kyrun.getSettings();
@@ -2230,6 +2678,7 @@ async function loadSettingsToForm() {
     const ptt = $('#setting-profile-tts-tray');
     const ptsp = $('#setting-profile-tts-suppress-privacy');
     const hkte = $('#setting-hotkeys-tts-enabled');
+    const cbte = $('#setting-colorbot-tts-enabled');
     if (mt) mt.checked = s.minimizeToTray !== false;
     if (sm) sm.checked = !!s.startMinimized;
     if (st) st.checked = !!s.streamerMode;
@@ -2246,6 +2695,73 @@ async function loadSettingsToForm() {
     if (ptt) ptt.checked = !!scopes.tray;
     if (ptsp) ptsp.checked = !!s.profileTtsSuppressPrivacy;
     if (hkte) hkte.checked = s.hotkeysTtsEnabled !== false;
+    if (cbte) cbte.checked = s.colorbotTtsEnabled !== false;
+    const cte = $('#setting-color-trigger-enabled');
+    const cts = $('#setting-color-trigger-source');
+    const ctp = $('#setting-color-trigger-preset');
+    const ctc = $('#setting-color-trigger-color');
+    const ctt = $('#setting-color-trigger-tolerance');
+    const cth0 = $('#setting-color-trigger-h0');
+    const cts0 = $('#setting-color-trigger-s0');
+    const ctv0 = $('#setting-color-trigger-v0');
+    const cth1 = $('#setting-color-trigger-h1');
+    const cts1 = $('#setting-color-trigger-s1');
+    const ctv1 = $('#setting-color-trigger-v1');
+    const ctf = $('#setting-color-trigger-fov');
+    const ctcs = $('#setting-color-trigger-center-screen');
+    const ctd = $('#setting-color-trigger-distance');
+    const ctpl = $('#setting-color-trigger-poll');
+    const ctcd = $('#setting-color-trigger-cooldown');
+    const ctch = $('#setting-color-trigger-click-hold');
+    const ctcm = $('#setting-color-trigger-click-mode');
+    const ctaim = $('#setting-color-trigger-aimbot');
+    const ctas = $('#setting-color-trigger-aim-speed');
+    const ctams = $('#setting-color-trigger-aim-max-step');
+    const ctaox = $('#setting-color-trigger-aim-offset-x');
+    const ctaoy = $('#setting-color-trigger-aim-offset-y');
+    const cta = $('#setting-color-trigger-action');
+    const ctdbg = $('#setting-color-trigger-debug');
+    const cthold = $('#setting-color-trigger-hold');
+    const cttoe = $('#setting-color-trigger-toggle-enabled');
+    const cttob = $('#setting-color-trigger-toggle-bind');
+    if (cte) cte.checked = false;
+    if (cts) cts.value = s.colorTriggerbotSource || 'preset';
+    if (ctp) ctp.value = s.colorTriggerbotPreset || 'bluegreen';
+    if (ctc) ctc.value = (s.colorTriggerbotColor || 'FF0000').replace(/^#/, '');
+    if (ctt) ctt.value = s.colorTriggerbotTolerance != null ? s.colorTriggerbotTolerance : 10;
+    const lo = s.colorTriggerbotHsvLower || [80, 40, 225];
+    const hi = s.colorTriggerbotHsvUpper || [90, 100, 255];
+    if (cth0) cth0.value = lo[0];
+    if (cts0) cts0.value = lo[1];
+    if (ctv0) ctv0.value = lo[2];
+    if (cth1) cth1.value = hi[0];
+    if (cts1) cts1.value = hi[1];
+    if (ctv1) ctv1.value = hi[2];
+    if (ctf) ctf.value = s.colorTriggerbotFov != null ? s.colorTriggerbotFov : 120;
+    if (ctcs) ctcs.checked = !!s.colorTriggerbotCenterOnScreen;
+    if (ctd) ctd.value = s.colorTriggerbotDistance != null ? s.colorTriggerbotDistance : 25;
+    if (ctpl) ctpl.value = s.colorTriggerbotPollMs != null ? s.colorTriggerbotPollMs : 16;
+    if (ctcd) ctcd.value = s.colorTriggerbotCooldownMs != null ? s.colorTriggerbotCooldownMs : 50;
+    if (ctch) ctch.value = s.colorTriggerbotClickHoldMs != null ? s.colorTriggerbotClickHoldMs : 50;
+    if (ctcm) ctcm.value = s.colorTriggerbotClickMode || 'single';
+    if (ctaim) ctaim.checked = !!s.colorTriggerbotAimbotEnabled;
+    if (ctas) ctas.value = s.colorTriggerbotAimSpeed != null ? s.colorTriggerbotAimSpeed : 0.35;
+    if (ctams) ctams.value = s.colorTriggerbotAimMaxStep != null ? s.colorTriggerbotAimMaxStep : 40;
+    if (ctaox) ctaox.value = s.colorTriggerbotAimOffsetX != null ? s.colorTriggerbotAimOffsetX : 0;
+    if (ctaoy) ctaoy.value = s.colorTriggerbotAimOffsetY != null ? s.colorTriggerbotAimOffsetY : 0;
+    if (cta) cta.value = s.colorTriggerbotAction || 'leftClick';
+    if (cthold) cthold.checked = !!s.colorTriggerbotHoldWhileOnTarget;
+    if (ctdbg) ctdbg.checked = !!s.colorTriggerbotDebug;
+    if (cttoe) cttoe.checked = !!s.colorTriggerbotToggleBindEnabled;
+    if (cttob) cttob.value = s.colorTriggerbotToggleBindKey || '';
+    syncColorTriggerbotPanels();
+    try {
+      const ct = await window.kyrun.getColorTriggerbotState();
+      syncColorTriggerbotEnabledUi(ct);
+    } catch {
+      syncColorTriggerbotEnabledUi({ active: false, enabled: false });
+    }
+    setColorTriggerbotSaveStatus('saved');
     syncTriggersToggleBindUi();
     syncProfileTtsSettingsUi();
   } catch {}
@@ -2274,6 +2790,72 @@ function wireSettingsControls() {
   onToggle('#setting-triggers-toggle-enabled', 'triggersToggleBindEnabled', syncTriggersToggleBindUi);
   onToggle('#setting-anonymous-startup', 'anonymousOnStartup');
   onToggle('#setting-random-timing', 'randomTiming');
+  const colorTriggerToggles = [
+    '#setting-color-trigger-enabled',
+    '#setting-color-trigger-debug',
+    '#setting-color-trigger-hold',
+    '#setting-color-trigger-aimbot',
+    '#setting-color-trigger-center-screen',
+    '#setting-color-trigger-toggle-enabled'
+  ];
+  colorTriggerToggles.forEach(sel => {
+    const el = $(sel);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      syncColorTriggerbotPanels();
+      void saveColorTriggerbotSettings({ toast: false });
+    });
+  });
+
+  const saveColorbotBtn = $('#btn-color-trigger-save');
+  if (saveColorbotBtn) {
+    saveColorbotBtn.onclick = () => { void saveColorTriggerbotSettings({ toast: true }); };
+  }
+
+  const cts = $('#setting-color-trigger-source');
+  if (cts) {
+    cts.addEventListener('change', async () => {
+      syncColorTriggerbotPanels();
+      await saveColorTriggerbotSettings({ toast: false });
+    });
+  }
+  const ctp = $('#setting-color-trigger-preset');
+  if (ctp) ctp.addEventListener('change', () => { void saveColorTriggerbotSettings({ toast: false }); });
+
+  const colorTriggerInputs = [
+    '#setting-color-trigger-color',
+    '#setting-color-trigger-tolerance',
+    '#setting-color-trigger-h0', '#setting-color-trigger-s0', '#setting-color-trigger-v0',
+    '#setting-color-trigger-h1', '#setting-color-trigger-s1', '#setting-color-trigger-v1',
+    '#setting-color-trigger-fov', '#setting-color-trigger-distance',
+    '#setting-color-trigger-poll', '#setting-color-trigger-cooldown', '#setting-color-trigger-click-hold',
+    '#setting-color-trigger-aim-speed', '#setting-color-trigger-aim-max-step',
+    '#setting-color-trigger-aim-offset-x', '#setting-color-trigger-aim-offset-y'
+  ];
+  colorTriggerInputs.forEach(sel => {
+    const el = $(sel);
+    if (!el) return;
+    el.addEventListener('change', () => { void saveColorTriggerbotSettings({ toast: false }); });
+    if (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'number')) {
+      el.addEventListener('input', () => scheduleColorTriggerbotSave());
+    }
+  });
+
+  const cta = $('#setting-color-trigger-action');
+  if (cta) cta.addEventListener('change', () => { void saveColorTriggerbotSettings({ toast: false }); });
+  const ctcm = $('#setting-color-trigger-click-mode');
+  if (ctcm) ctcm.addEventListener('change', () => { void saveColorTriggerbotSettings({ toast: false }); });
+
+  const pickRgb = $('#btn-color-trigger-pick-rgb');
+  if (pickRgb) pickRgb.onclick = () => { void pickColorTriggerbotSample({ fillHsv: false }); };
+  const pickRgbShot = $('#btn-color-trigger-pick-rgb-shot');
+  if (pickRgbShot) pickRgbShot.onclick = () => { void pickColorTriggerFromScreenshot({ fillHsv: false }); };
+  const pickHsv = $('#btn-color-trigger-pick-hsv');
+  if (pickHsv) pickHsv.onclick = () => { void pickColorTriggerbotSample({ fillHsv: true }); };
+  const pickHsvShot = $('#btn-color-trigger-pick-hsv-shot');
+  if (pickHsvShot) pickHsvShot.onclick = () => { void pickColorTriggerFromScreenshot({ fillHsv: true }); };
+  const probeBtn = $('#btn-color-trigger-probe');
+  if (probeBtn) probeBtn.onclick = () => { void runColorTriggerProbe(); };
 
   const pte = $('#setting-profile-tts-enabled');
   const pth = $('#setting-profile-tts-hotkeys');
@@ -2281,6 +2863,7 @@ function wireSettingsControls() {
   const ptt = $('#setting-profile-tts-tray');
   const ptsp = $('#setting-profile-tts-suppress-privacy');
   const hkte = $('#setting-hotkeys-tts-enabled');
+  const cbte = $('#setting-colorbot-tts-enabled');
   async function saveProfileTtsSettingsFromUi() {
     try {
       const settings = await window.kyrun.getSettings();
@@ -2292,6 +2875,7 @@ function wireSettingsControls() {
       };
       settings.profileTtsSuppressPrivacy = !!(ptsp && ptsp.checked);
       settings.hotkeysTtsEnabled = !!(hkte && hkte.checked);
+      settings.colorbotTtsEnabled = !!(cbte && cbte.checked);
       await window.kyrun.saveSettings(settings);
       syncProfileTtsSettingsUi();
     } catch {}
@@ -2302,6 +2886,83 @@ function wireSettingsControls() {
   if (ptt) ptt.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
   if (ptsp) ptsp.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
   if (hkte) hkte.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+  if (cbte) cbte.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+
+  const ctToggleBind = $('#setting-color-trigger-toggle-bind');
+  if (ctToggleBind) {
+    ctToggleBind.onclick = async function () {
+      if (ctToggleBind.disabled) return;
+      this.value = 'Press key or mouse...';
+      const self = this;
+      const keyH = async e => {
+        e.preventDefault();
+        const name = keyEventToBindLabel(e);
+        self.value = name;
+        cleanup();
+        try {
+          const settings = await window.kyrun.getSettings();
+          readColorTriggerbotFromForm(settings);
+          settings.colorTriggerbotToggleBindKey = name;
+          settings.colorTriggerbotToggleBindVk = e.keyCode;
+          settings.colorTriggerbotToggleBindIsMouse = false;
+          settings.colorTriggerbotToggleBindEnabled = true;
+          const toggleEn = $('#setting-color-trigger-toggle-enabled');
+          if (toggleEn) toggleEn.checked = true;
+          syncColorTriggerbotToggleBindUi();
+          const enabled = !!($('#setting-color-trigger-enabled')?.checked);
+          settings.colorTriggerbotEnabled = enabled;
+          await window.kyrun.saveSettings(settings);
+          showToast('Colorbot toggle shortcut saved', 'success');
+        } catch {}
+      };
+      const mouseH = async e => {
+        if (e.button === 0) return;
+        e.preventDefault(); e.stopPropagation();
+        const names = { 1: 'Middle Mouse', 2: 'Right Mouse', 3: 'Mouse X1 (Side)', 4: 'Mouse X2 (Side)' };
+        const vkCodes = { 1: 4, 2: 2, 3: 5, 4: 6 };
+        const name = names[e.button] || `Mouse ${e.button}`;
+        self.value = name;
+        cleanup();
+        try {
+          const settings = await window.kyrun.getSettings();
+          readColorTriggerbotFromForm(settings);
+          settings.colorTriggerbotToggleBindKey = name;
+          settings.colorTriggerbotToggleBindVk = vkCodes[e.button] || e.button;
+          settings.colorTriggerbotToggleBindIsMouse = true;
+          settings.colorTriggerbotToggleBindEnabled = true;
+          const toggleEn = $('#setting-color-trigger-toggle-enabled');
+          if (toggleEn) toggleEn.checked = true;
+          syncColorTriggerbotToggleBindUi();
+          const enabled = !!($('#setting-color-trigger-enabled')?.checked);
+          settings.colorTriggerbotEnabled = enabled;
+          await window.kyrun.saveSettings(settings);
+          showToast('Colorbot toggle shortcut saved', 'success');
+        } catch {}
+      };
+      function cleanup() {
+        document.removeEventListener('keydown', keyH);
+        document.removeEventListener('mousedown', mouseH);
+      }
+      document.addEventListener('keydown', keyH);
+      document.addEventListener('mousedown', mouseH);
+    };
+    ctToggleBind.oncontextmenu = async e => {
+      e.preventDefault();
+      if (ctToggleBind.disabled) return;
+      try {
+        const settings = await window.kyrun.getSettings();
+        readColorTriggerbotFromForm(settings);
+        settings.colorTriggerbotToggleBindKey = '';
+        settings.colorTriggerbotToggleBindVk = 0;
+        settings.colorTriggerbotToggleBindIsMouse = false;
+        const enabled = !!($('#setting-color-trigger-enabled')?.checked);
+        settings.colorTriggerbotEnabled = enabled;
+        await window.kyrun.saveSettings(settings);
+        ctToggleBind.value = '';
+        showToast('Colorbot toggle shortcut cleared', 'info');
+      } catch {}
+    };
+  }
 
   const ttBind = $('#setting-triggers-toggle-bind');
   if (ttBind) {
@@ -2386,6 +3047,11 @@ function wireSettingsControls() {
 
 $('.titlebar__menu-item[data-action="settings"]').onclick = async () => {
   if (state.currentView === 'settings') {
+    if (colorTriggerbotSaveDebounce) {
+      clearTimeout(colorTriggerbotSaveDebounce);
+      colorTriggerbotSaveDebounce = null;
+    }
+    await saveColorTriggerbotSettings({ toast: false });
     $('#settings-view').classList.remove('settings-view--visible');
     if (state.currentMacro) $('#editor-content').classList.remove('hidden');
     else $('#welcome-view').classList.remove('hidden');
@@ -2445,6 +3111,7 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
     state.macroTriggers = { armed: ts.armed };
   } catch {}
   hotkeysTtsReady = true;
+  colorbotTtsReady = true;
   // We cannot reload triggers simultaneously because it reads the same macro files we just grabbed
   setTimeout(reloadProfileTriggers, 500);
   try {
@@ -2462,6 +3129,27 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
   } catch {}
   wireSettingsControls();
   updateStatusBar();
+
+  try {
+    const ct = await window.kyrun.getColorTriggerbotState();
+    lastColorbotEnabled = ct.enabled != null ? !!ct.enabled : !!ct.active;
+    syncColorTriggerbotEnabledUi(ct);
+  } catch {}
+  if (window.kyrun.onColorTriggerbotState) {
+    window.kyrun.onColorTriggerbotState(data => {
+      const enabled = data && data.enabled != null ? !!data.enabled : !!data.active;
+      if (colorbotTtsReady && enabled !== lastColorbotEnabled) {
+        void speakColorbotState(enabled);
+      }
+      lastColorbotEnabled = enabled;
+      syncColorTriggerbotEnabledUi(data);
+    });
+  }
+  if (window.kyrun.onColorTriggerbotDebug) {
+    window.kyrun.onColorTriggerbotDebug(data => {
+      if ($('#setting-color-trigger-debug')?.checked) appendColorTriggerDebugLog(data);
+    });
+  }
 
   const stEl = $('#status-triggers');
   if (stEl) {

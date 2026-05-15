@@ -228,6 +228,87 @@ html, body {
   color: var(--text-tertiary);
 }
 
+.titlebar__status-item--readonly {
+  cursor: default;
+}
+
+.color-triggerbot-rgb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.color-triggerbot-hsv-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+  max-width: 420px;
+}
+
+.color-triggerbot-hsv-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.color-triggerbot-hsv-grid input {
+  width: 100%;
+}
+
+.color-triggerbot-debug {
+  margin: 8px 0 16px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bg-tertiary, #161b22);
+  border: 1px solid var(--border-subtle, #30363d);
+}
+
+.color-triggerbot-debug__title {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.color-triggerbot-save-row {
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.color-triggerbot-save-status {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.color-triggerbot-save-status--saved {
+  color: var(--accent-success, #3fb950);
+}
+
+.color-triggerbot-save-status--unsaved {
+  color: var(--accent-warning, #d29922);
+}
+
+.color-triggerbot-save-status--error {
+  color: var(--accent-danger, #f85149);
+}
+
+.color-triggerbot-debug__log {
+  margin: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 .titlebar__status-dot {
   width: 7px;
   height: 7px;

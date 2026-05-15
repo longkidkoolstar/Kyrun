@@ -26,8 +26,11 @@ let mouseTriggerInterval = null; // polling for mouse button triggers
 let mouseTriggerBindings = new Map(); // vkCode → macroId
 /** Special macroId: fires even when macro triggers are disarmed (toggles armed state). */
 const TOGGLE_TRIGGERS_ID = '!kyrun:toggle-triggers';
+const TOGGLE_COLORBOT_ID = '!kyrun:toggle-colorbot';
 let triggersToggleAccelRegistered = null;
 let triggersToggleMouseVk = null;
+let colorbotToggleAccelRegistered = null;
+let colorbotToggleMouseVk = null;
 
 /** Global macro recording while the window is unfocused (GetAsyncKeyState polling). */
 let recordCaptureInterval = null;
@@ -97,6 +100,582 @@ function colorsMatchWithinTolerance(actualColor, expectedColor, tolerance = 0) {
   return Math.abs(actual.r - expected.r) <= delta
     && Math.abs(actual.g - expected.g) <= delta
     && Math.abs(actual.b - expected.b) <= delta;
+}
+
+// ── Color triggerbot (HSV region scan) ─────────────────────────────
+const COLOR_TRIGGERBOT_PRESETS = {
+  bluegreen: { lower: [80, 40, 225], upper: [90, 100, 255] },
+  pinkishpurple: { lower: [150, 85, 230], upper: [150, 120, 255] },
+  green: { lower: [55, 70, 235], upper: [75, 145, 255] },
+  pink: { lower: [150, 100, 245], upper: [160, 155, 255] }
+};
+
+let colorTriggerbotInterval = null;
+let colorTriggerbotLastClick = 0;
+let colorTriggerbotMatcher = null;
+let colorTriggerbotRuntime = null;
+/** Session-only; never written to settings.json */
+let colorTriggerbotActive = false;
+/** @type {'left'|'right'|'middle'|null} */
+let colorTriggerbotButtonHeld = null;
+let colorTriggerbotWasOnTarget = false;
+/** @type {{ button: 'left'|'right'|'middle', at: number }|null} */
+let colorTriggerbotClickRelease = null;
+
+function colorTriggerbotActionToButton(action) {
+  if (action === 'rightClick') return 'right';
+  if (action === 'middleClick') return 'middle';
+  if (action === 'leftClick') return 'left';
+  return null;
+}
+
+function colorTriggerbotReleaseHold() {
+  if (!colorTriggerbotButtonHeld || !input) return;
+  try { input.mouseUp(colorTriggerbotButtonHeld); } catch (_) {}
+  colorTriggerbotButtonHeld = null;
+}
+
+function colorTriggerbotProcessClickRelease() {
+  if (!colorTriggerbotClickRelease || !input) return;
+  if (Date.now() < colorTriggerbotClickRelease.at) return;
+  try { input.mouseUp(colorTriggerbotClickRelease.button); } catch (_) {}
+  colorTriggerbotClickRelease = null;
+}
+
+function colorTriggerbotCancelClickRelease() {
+  if (!colorTriggerbotClickRelease || !input) return;
+  try { input.mouseUp(colorTriggerbotClickRelease.button); } catch (_) {}
+  colorTriggerbotClickRelease = null;
+}
+
+function colorTriggerbotUpdateHold(button, onTarget) {
+  if (!input || !button) {
+    colorTriggerbotReleaseHold();
+    return;
+  }
+  if (onTarget) {
+    if (colorTriggerbotButtonHeld && colorTriggerbotButtonHeld !== button) {
+      colorTriggerbotReleaseHold();
+    }
+    if (!colorTriggerbotButtonHeld) {
+      try {
+        input.mouseDown(button);
+        colorTriggerbotButtonHeld = button;
+      } catch (_) {}
+    }
+  } else if (colorTriggerbotButtonHeld) {
+    try { input.mouseUp(colorTriggerbotButtonHeld); } catch (_) {}
+    colorTriggerbotButtonHeld = null;
+  }
+}
+
+function rgbToHsv(r, g, b) {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  const s = max === 0 ? 0 : d / max;
+  const v = max;
+  if (d !== 0) {
+    if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6;
+    else if (max === gn) h = ((bn - rn) / d + 2) / 6;
+    else h = ((rn - gn) / d + 4) / 6;
+  }
+  return {
+    h: Math.round(h * 179),
+    s: Math.round(s * 255),
+    v: Math.round(v * 255)
+  };
+}
+
+function hsvInRange(h, s, v, lower, upper) {
+  const lo = lower || [0, 0, 0];
+  const hi = upper || [179, 255, 255];
+  return h >= lo[0] && h <= hi[0]
+    && s >= lo[1] && s <= hi[1]
+    && v >= lo[2] && v <= hi[2];
+}
+
+function normalizeHsvBound(arr, fallback) {
+  if (!Array.isArray(arr) || arr.length < 3) return fallback.slice();
+  return arr.slice(0, 3).map((n, i) => {
+    const v = Math.round(Number(n));
+    if (!Number.isFinite(v)) return fallback[i];
+    if (i === 0) return Math.min(179, Math.max(0, v));
+    return Math.min(255, Math.max(0, v));
+  });
+}
+
+function buildColorTriggerbotMatcher(settings) {
+  const source = settings.colorTriggerbotSource || 'preset';
+  if (source === 'preset') {
+    const key = String(settings.colorTriggerbotPreset || 'bluegreen').toLowerCase();
+    const preset = COLOR_TRIGGERBOT_PRESETS[key] || COLOR_TRIGGERBOT_PRESETS.bluegreen;
+    const lower = preset.lower;
+    const upper = preset.upper;
+    return (r, g, b) => {
+      const { h, s, v } = rgbToHsv(r, g, b);
+      return hsvInRange(h, s, v, lower, upper);
+    };
+  }
+  if (source === 'customHsv') {
+    const lower = normalizeHsvBound(settings.colorTriggerbotHsvLower, [0, 0, 0]);
+    const upper = normalizeHsvBound(settings.colorTriggerbotHsvUpper, [179, 255, 255]);
+    return (r, g, b) => {
+      const { h, s, v } = rgbToHsv(r, g, b);
+      return hsvInRange(h, s, v, lower, upper);
+    };
+  }
+  const expected = parseHexColor(settings.colorTriggerbotColor || 'FF0000');
+  const tolerance = settings.colorTriggerbotTolerance ?? 10;
+  if (!expected) {
+    return () => false;
+  }
+  return (r, g, b) => colorsMatchWithinTolerance({ r, g, b }, expected, tolerance);
+}
+
+function rgbBytesToHex(r, g, b) {
+  return [r, g, b].map(n => (n & 255).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+function getColorTriggerbotCaptureRect(fov, centerOnScreen = false) {
+  const primary = screen.getPrimaryDisplay();
+  const bounds = getDisplayPhysicalBounds(primary);
+  const size = Math.round(fov);
+  let centerX;
+  let centerY;
+  if (centerOnScreen) {
+    centerX = bounds.x + bounds.width / 2;
+    centerY = bounds.y + bounds.height / 2;
+  } else {
+    const cursor = getPhysicalCursorPoint();
+    centerX = Number.isFinite(cursor?.x) ? cursor.x : bounds.x + bounds.width / 2;
+    centerY = Number.isFinite(cursor?.y) ? cursor.y : bounds.y + bounds.height / 2;
+  }
+  let left = Math.floor(centerX - size / 2);
+  let top = Math.floor(centerY - size / 2);
+  const maxLeft = bounds.x + bounds.width - size;
+  const maxTop = bounds.y + bounds.height - size;
+  left = Math.max(bounds.x, Math.min(maxLeft, left));
+  top = Math.max(bounds.y, Math.min(maxTop, top));
+  return {
+    left,
+    top,
+    width: size,
+    height: size,
+    centerX,
+    centerY,
+    centerOnScreen: !!centerOnScreen,
+    screenWidth: bounds.width,
+    screenHeight: bounds.height,
+    scaleFactor: primary?.scaleFactor || 1
+  };
+}
+
+function analyzeColorTriggerCapture(capture, matcher, maxDistance, opts = {}) {
+  const stride = opts.fullScan ? 1 : (capture.width > 150 ? 2 : 1);
+  const { width: w, height: h, data } = capture;
+  const cx = Math.floor(w / 2);
+  const cy = Math.floor(h / 2);
+  const ci = (cy * w + cx) * 3;
+  const centerB = data[ci];
+  const centerG = data[ci + 1];
+  const centerR = data[ci + 2];
+  const centerHex = rgbBytesToHex(centerR, centerG, centerB);
+  const centerMatch = matcher(centerR, centerG, centerB);
+  const centerHsv = rgbToHsv(centerR, centerG, centerB);
+
+  let minDist = Infinity;
+  let matchCount = 0;
+  let closestPx = -1;
+  let closestPy = -1;
+  let sumPx = 0;
+  let sumPy = 0;
+  let inRangeCount = 0;
+
+  for (let py = 0; py < h; py += stride) {
+    for (let px = 0; px < w; px += stride) {
+      const i = (py * w + px) * 3;
+      const b = data[i];
+      const g = data[i + 1];
+      const r = data[i + 2];
+      if (!matcher(r, g, b)) continue;
+      matchCount++;
+      const dist = Math.sqrt((px - cx) ** 2 + (py - cy) ** 2);
+      if (dist < minDist) {
+        minDist = dist;
+        closestPx = px;
+        closestPy = py;
+      }
+      if (dist <= maxDistance) {
+        sumPx += px;
+        sumPy += py;
+        inRangeCount++;
+      }
+    }
+  }
+
+  const hasMatch = minDist !== Infinity;
+  const effectiveMinDist = hasMatch ? minDist : -1;
+  const inRange = hasMatch && minDist <= maxDistance;
+  let targetPx = -1;
+  let targetPy = -1;
+  if (inRange) {
+    if (inRangeCount > 0) {
+      targetPx = Math.round(sumPx / inRangeCount);
+      targetPy = Math.round(sumPy / inRangeCount);
+    } else {
+      targetPx = closestPx;
+      targetPy = closestPy;
+    }
+  }
+  return {
+    minDist: effectiveMinDist,
+    matchCount,
+    centerHex,
+    centerMatch,
+    centerHsv,
+    wouldTrigger: inRange,
+    targetPx,
+    targetPy,
+    aimCentroid: inRange && inRangeCount > 0
+  };
+}
+
+function colorTriggerbotAimAtTarget(capture, analysis, aimSpeed, offsetX, offsetY, aimMaxStep) {
+  if (!input || !capture || analysis.targetPx < 0 || analysis.targetPy < 0) return;
+  const cx = Math.floor(capture.width / 2);
+  const cy = Math.floor(capture.height / 2);
+  const dx = (analysis.targetPx - cx) + (offsetX || 0);
+  const dy = (analysis.targetPy - cy) + (offsetY || 0);
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 2) return;
+  const speed = Math.min(1, Math.max(0.05, Number(aimSpeed) || 0.35));
+  const maxStep = Math.max(4, Math.round(Number(aimMaxStep) || 40));
+  // Move a fraction of remaining distance, capped so we don't overshoot in one tick
+  let step = dist * speed;
+  step = Math.min(step, maxStep, Math.max(0, dist - 2));
+  if (step < 1) return;
+  const pos = input.getMousePos();
+  const nx = Math.round(pos.x + (dx / dist) * step);
+  const ny = Math.round(pos.y + (dy / dist) * step);
+  try { input.moveMouse(nx, ny); } catch (_) {}
+}
+
+function shouldColorTriggerbotClick(onTarget, clickMode, cooldownMs) {
+  if (!onTarget) return false;
+  const mode = clickMode || 'single';
+  const now = Date.now();
+  if (mode === 'edge') {
+    if (!colorTriggerbotWasOnTarget) {
+      colorTriggerbotWasOnTarget = true;
+      colorTriggerbotLastClick = now;
+      return true;
+    }
+    return false;
+  }
+  if (mode === 'rapid') {
+    const interval = Math.max(0, cooldownMs);
+    if (now - colorTriggerbotLastClick < interval) return false;
+    colorTriggerbotLastClick = now;
+    return true;
+  }
+  // single
+  if (now - colorTriggerbotLastClick < Math.max(0, cooldownMs)) return false;
+  colorTriggerbotLastClick = now;
+  return true;
+}
+
+function scanRegionForColorTrigger(capture, matcher, maxDistance) {
+  return analyzeColorTriggerCapture(capture, matcher, maxDistance).minDist;
+}
+
+function queueColorTriggerbotClick(action) {
+  if (!input) return false;
+  const button = colorTriggerbotActionToButton(action);
+  if (!button) return false;
+  if (colorTriggerbotClickRelease) {
+    if (Date.now() >= colorTriggerbotClickRelease.at) {
+      colorTriggerbotProcessClickRelease();
+    } else {
+      return false;
+    }
+  }
+  try {
+    input.mouseDown(button);
+    const holdMs = Math.max(0, Math.round(Number(colorTriggerbotRuntime?.clickHoldMs) || 50));
+    colorTriggerbotClickRelease = { button, at: Date.now() + holdMs };
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function sendColorTriggerbotDebug(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('color-triggerbot-debug', payload);
+  }
+}
+
+function probeColorTriggerbot(settings) {
+  if (!input) {
+    return { ok: false, error: 'Native input module not loaded' };
+  }
+  const fov = Math.min(400, Math.max(20, Math.round(Number(settings.colorTriggerbotFov) || 120)));
+  const distance = Math.min(fov / 2, Math.max(1, Math.round(Number(settings.colorTriggerbotDistance) || 25)));
+  const matcher = buildColorTriggerbotMatcher(settings);
+  const centerOnScreen = !!settings.colorTriggerbotCenterOnScreen;
+  const region = getColorTriggerbotCaptureRect(fov, centerOnScreen);
+
+  let capture;
+  try {
+    capture = input.captureRegion(region.left, region.top, region.width, region.height);
+  } catch (e) {
+    return { ok: false, error: `Capture failed: ${e.message}`, region };
+  }
+  if (!capture || !capture.data) {
+    const centerPx = {
+      x: Math.floor(region.left + region.width / 2),
+      y: Math.floor(region.top + region.height / 2)
+    };
+    let fallbackHex = null;
+    try { fallbackHex = input.getPixelColor(centerPx.x, centerPx.y); } catch (_) {}
+    return {
+      ok: false,
+      error: 'BitBlt capture returned empty (common in exclusive fullscreen or some games). Try windowed/borderless.',
+      region,
+      centerPixel: centerPx,
+      fallbackCenterHex: fallbackHex
+    };
+  }
+
+  const analysis = analyzeColorTriggerCapture(capture, matcher, distance, { fullScan: true });
+  const source = settings.colorTriggerbotSource || 'preset';
+  const extra = {};
+  if (source === 'customRgb') {
+    extra.targetColor = settings.colorTriggerbotColor || 'FF0000';
+    extra.tolerance = settings.colorTriggerbotTolerance ?? 10;
+    extra.targetColorValid = !!parseHexColor(extra.targetColor);
+  }
+  if (source === 'customHsv') {
+    extra.hsvLower = normalizeHsvBound(settings.colorTriggerbotHsvLower, [0, 0, 0]);
+    extra.hsvUpper = normalizeHsvBound(settings.colorTriggerbotHsvUpper, [179, 255, 255]);
+  }
+  if (source === 'preset') {
+    extra.preset = settings.colorTriggerbotPreset || 'bluegreen';
+  }
+  return {
+    ok: true,
+    region,
+    fov,
+    distance,
+    source,
+    action: settings.colorTriggerbotAction || 'leftClick',
+    holdWhileOnTarget: !!settings.colorTriggerbotHoldWhileOnTarget,
+    clickMode: settings.colorTriggerbotClickMode || 'single',
+    aimbotEnabled: !!settings.colorTriggerbotAimbotEnabled,
+    centerOnScreen,
+    macroRunning: !!macroRunning,
+    ...extra,
+    ...analysis
+  };
+}
+
+function sendColorTriggerbotState(active) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('color-triggerbot-state', {
+      active: !!active,
+      enabled: colorTriggerbotActive
+    });
+  }
+}
+
+function toggleColorTriggerbot() {
+  applyColorTriggerbot(appSettings, !colorTriggerbotActive);
+}
+
+function stopColorTriggerbotPolling(notify = true) {
+  if (colorTriggerbotInterval) {
+    clearInterval(colorTriggerbotInterval);
+    colorTriggerbotInterval = null;
+  }
+  colorTriggerbotReleaseHold();
+  colorTriggerbotCancelClickRelease();
+  colorTriggerbotWasOnTarget = false;
+  colorTriggerbotMatcher = null;
+  colorTriggerbotRuntime = null;
+  if (notify) sendColorTriggerbotState(false);
+}
+
+function colorTriggerbotTick() {
+  if (!input || !colorTriggerbotMatcher || !colorTriggerbotRuntime) return;
+  colorTriggerbotProcessClickRelease();
+
+  const {
+    fov, distance, cooldownMs, clickHoldMs, action, debug, holdWhileOnTarget,
+    clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen
+  } = colorTriggerbotRuntime;
+  const button = colorTriggerbotActionToButton(action);
+  const captureCenterOnScreen = centerOnScreen || aimbotEnabled;
+  const region = getColorTriggerbotCaptureRect(fov, captureCenterOnScreen);
+  const baseDebug = {
+    ts: Date.now(),
+    region,
+    macroRunning: !!macroRunning,
+    action,
+    holdWhileOnTarget: !!holdWhileOnTarget,
+    clickMode,
+    aimbotEnabled: !!aimbotEnabled,
+    buttonHeld: colorTriggerbotButtonHeld
+  };
+
+  if (macroRunning) {
+    colorTriggerbotReleaseHold();
+    colorTriggerbotCancelClickRelease();
+    if (debug) sendColorTriggerbotDebug({ ...baseDebug, captureOk: false, skipped: 'macro running' });
+    return;
+  }
+
+  let capture;
+  try {
+    capture = input.captureRegion(region.left, region.top, region.width, region.height);
+  } catch (e) {
+    colorTriggerbotReleaseHold();
+    if (debug) sendColorTriggerbotDebug({ ...baseDebug, captureOk: false, error: e.message });
+    return;
+  }
+  if (!capture || !capture.data) {
+    colorTriggerbotReleaseHold();
+    if (debug) {
+      sendColorTriggerbotDebug({
+        ...baseDebug,
+        captureOk: false,
+        error: 'Empty capture (try windowed/borderless mode)'
+      });
+    }
+    return;
+  }
+
+  const analysis = analyzeColorTriggerCapture(capture, colorTriggerbotMatcher, distance);
+  const onTarget = !!analysis.wouldTrigger;
+
+  if (!onTarget) colorTriggerbotWasOnTarget = false;
+
+  if (aimbotEnabled && onTarget && analysis.targetPx >= 0) {
+    const cx = Math.floor(capture.width / 2);
+    const cy = Math.floor(capture.height / 2);
+    const aimDx = analysis.targetPx - cx + (aimOffsetX || 0);
+    const aimDy = analysis.targetPy - cy + (aimOffsetY || 0);
+    colorTriggerbotAimAtTarget(capture, analysis, aimSpeed, aimOffsetX, aimOffsetY, aimMaxStep);
+    if (debug) {
+      const pos = input.getMousePos();
+      sendColorTriggerbotDebug({
+        ...baseDebug,
+        captureOk: true,
+        ...analysis,
+        aimMoved: true,
+        aimDelta: { x: aimDx, y: aimDy },
+        aimTarget: { x: pos.x + aimDx, y: pos.y + aimDy }
+      });
+    }
+  }
+
+  if (holdWhileOnTarget && button) {
+    colorTriggerbotCancelClickRelease();
+    const wasHeld = !!colorTriggerbotButtonHeld;
+    colorTriggerbotUpdateHold(button, onTarget);
+    if (debug) {
+      sendColorTriggerbotDebug({
+        ...baseDebug,
+        captureOk: true,
+        ...analysis,
+        triggerDistance: distance,
+        holdMode: true,
+        buttonHeld: colorTriggerbotButtonHeld,
+        holdPressed: !wasHeld && !!colorTriggerbotButtonHeld,
+        holdReleased: wasHeld && !colorTriggerbotButtonHeld
+      });
+    }
+    return;
+  }
+
+  colorTriggerbotReleaseHold();
+
+  if (debug) {
+    sendColorTriggerbotDebug({
+      ...baseDebug,
+      captureOk: true,
+      ...analysis,
+      triggerDistance: distance,
+      cooldownMs,
+      clickHoldMs,
+      msSinceLastAction: Date.now() - colorTriggerbotLastClick
+    });
+  }
+
+  if (!onTarget || action === 'none') return;
+
+  if (!shouldColorTriggerbotClick(onTarget, clickMode, cooldownMs)) return;
+
+  try {
+    const fired = queueColorTriggerbotClick(action);
+    if (debug) {
+      sendColorTriggerbotDebug({
+        ...baseDebug,
+        captureOk: true,
+        fired,
+        clickQueued: fired,
+        clickMode,
+        clickHoldMs,
+        ...analysis
+      });
+    }
+  } catch (e) {
+    if (debug) sendColorTriggerbotDebug({ ...baseDebug, captureOk: true, fireError: e.message });
+  }
+}
+
+function applyColorTriggerbot(settings, enabled = colorTriggerbotActive) {
+  colorTriggerbotActive = !!enabled;
+  stopColorTriggerbotPolling(false);
+  if (!settings || !colorTriggerbotActive || !input) {
+    sendColorTriggerbotState(false);
+    return;
+  }
+
+  const fov = Math.min(400, Math.max(20, Math.round(Number(settings.colorTriggerbotFov) || 120)));
+  const distance = Math.min(fov / 2, Math.max(1, Math.round(Number(settings.colorTriggerbotDistance) || 25)));
+  const pollMs = Math.min(100, Math.max(8, Math.round(Number(settings.colorTriggerbotPollMs) || 16)));
+  const cooldownMs = Math.max(0, Math.round(Number(settings.colorTriggerbotCooldownMs) || 50));
+  const clickHoldMs = Math.max(0, Math.round(Number(settings.colorTriggerbotClickHoldMs) ?? 50));
+  const action = settings.colorTriggerbotAction || 'leftClick';
+  const debug = !!settings.colorTriggerbotDebug;
+  const holdWhileOnTarget = !!settings.colorTriggerbotHoldWhileOnTarget;
+  const clickMode = settings.colorTriggerbotClickMode || 'single';
+  const aimbotEnabled = !!settings.colorTriggerbotAimbotEnabled;
+  const aimSpeed = Math.min(1, Math.max(0.05, Number(settings.colorTriggerbotAimSpeed) || 0.35));
+  const aimMaxStep = Math.max(4, Math.round(Number(settings.colorTriggerbotAimMaxStep) || 40));
+  const aimOffsetX = Math.round(Number(settings.colorTriggerbotAimOffsetX) || 0);
+  const aimOffsetY = Math.round(Number(settings.colorTriggerbotAimOffsetY) || 0);
+  const centerOnScreen = !!settings.colorTriggerbotCenterOnScreen;
+
+  colorTriggerbotMatcher = buildColorTriggerbotMatcher(settings);
+  colorTriggerbotRuntime = {
+    fov, distance, cooldownMs, clickHoldMs, action, debug, holdWhileOnTarget,
+    clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen
+  };
+  colorTriggerbotLastClick = 0;
+  colorTriggerbotWasOnTarget = false;
+
+  colorTriggerbotInterval = setInterval(colorTriggerbotTick, pollMs);
+  sendColorTriggerbotState(true);
+  if (debug) {
+    const probe = probeColorTriggerbot(settings);
+    sendColorTriggerbotDebug({ ts: Date.now(), startupProbe: true, ...probe });
+  }
 }
 
 function startRecordCapturePolling() {
@@ -271,7 +850,36 @@ function loadSettings() {
     profileTtsSuppressPrivacy: false,
     /** Speak "Hotkeys enabled/disabled" when global hotkeys state changes. */
     hotkeysTtsEnabled: true,
-    ...raw
+    /** Speak when color triggerbot is enabled or disabled. */
+    colorbotTtsEnabled: true,
+    colorTriggerbotEnabled: false,
+    colorTriggerbotSource: 'preset',
+    colorTriggerbotPreset: 'bluegreen',
+    colorTriggerbotColor: 'FF0000',
+    colorTriggerbotTolerance: 10,
+    colorTriggerbotHsvLower: [80, 40, 225],
+    colorTriggerbotHsvUpper: [90, 100, 255],
+    colorTriggerbotFov: 120,
+    colorTriggerbotCenterOnScreen: false,
+    colorTriggerbotToggleBindEnabled: false,
+    colorTriggerbotToggleBindKey: '',
+    colorTriggerbotToggleBindVk: 0,
+    colorTriggerbotToggleBindIsMouse: false,
+    colorTriggerbotDistance: 25,
+    colorTriggerbotPollMs: 16,
+    colorTriggerbotCooldownMs: 50,
+    colorTriggerbotClickHoldMs: 50,
+    colorTriggerbotAction: 'leftClick',
+    colorTriggerbotHoldWhileOnTarget: false,
+    colorTriggerbotClickMode: 'single',
+    colorTriggerbotAimbotEnabled: false,
+    colorTriggerbotAimSpeed: 0.35,
+    colorTriggerbotAimMaxStep: 40,
+    colorTriggerbotAimOffsetX: 0,
+    colorTriggerbotAimOffsetY: 0,
+    colorTriggerbotDebug: false,
+    ...raw,
+    colorTriggerbotEnabled: false
   };
 }
 
@@ -310,6 +918,51 @@ function unregisterTriggersToggleBind() {
   }
 }
 
+function isReservedMouseToggleVk(vk) {
+  return vk === triggersToggleMouseVk || vk === colorbotToggleMouseVk;
+}
+
+function reapplyGlobalToggleBinds() {
+  applyTriggersToggleBind(appSettings);
+  applyColorbotToggleBind(appSettings);
+}
+
+function unregisterColorbotToggleBind() {
+  if (colorbotToggleAccelRegistered) {
+    try { globalShortcut.unregister(colorbotToggleAccelRegistered); } catch (_) {}
+    colorbotToggleAccelRegistered = null;
+  }
+  if (colorbotToggleMouseVk != null) {
+    mouseTriggerBindings.delete(colorbotToggleMouseVk);
+    colorbotToggleMouseVk = null;
+    if (mouseTriggerBindings.size === 0) stopMouseTriggerPolling();
+  }
+}
+
+function applyColorbotToggleBind(settings) {
+  unregisterColorbotToggleBind();
+  if (!settings || !settings.colorTriggerbotToggleBindEnabled) return;
+  const vk = settings.colorTriggerbotToggleBindVk || 0;
+  const isMouse = !!settings.colorTriggerbotToggleBindIsMouse;
+  const keyName = settings.colorTriggerbotToggleBindKey || '';
+  if (isMouse) {
+    if (!input || !vk) return;
+    mouseTriggerBindings.set(vk, TOGGLE_COLORBOT_ID);
+    colorbotToggleMouseVk = vk;
+    startMouseTriggerPolling();
+    return;
+  }
+  const accel = keyNameToElectronAccelerator(keyName);
+  if (!accel) return;
+  try {
+    const ok = globalShortcut.register(accel, () => toggleColorTriggerbot());
+    if (ok) colorbotToggleAccelRegistered = accel;
+    else colorbotToggleAccelRegistered = null;
+  } catch (_) {
+    colorbotToggleAccelRegistered = null;
+  }
+}
+
 function applyTriggersToggleBind(settings) {
   unregisterTriggersToggleBind();
   if (!settings || !settings.triggersToggleBindEnabled) return;
@@ -337,7 +990,10 @@ function applyTriggersToggleBind(settings) {
 }
 
 function saveSettings(settings) {
-  appSettings = { ...appSettings, ...settings };
+  const next = { ...settings };
+  delete next.colorTriggerbotEnabled;
+  appSettings = { ...appSettings, ...next };
+  appSettings.colorTriggerbotEnabled = false;
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(appSettings, null, 2));
 }
 
@@ -554,13 +1210,28 @@ function setupIPC() {
   // Settings
   ipcMain.handle('get-settings', () => loadSettings());
   ipcMain.handle('save-settings', (_, settings) => {
+    const enabled = settings?.colorTriggerbotEnabled;
     saveSettings(settings);
+    applyTriggersToggleBind(appSettings);
+    applyColorbotToggleBind(appSettings);
+    applyColorTriggerbot(appSettings, enabled !== undefined ? !!enabled : colorTriggerbotActive);
+    return true;
+  });
+
+  ipcMain.handle('get-color-triggerbot-state', () => ({
+    active: !!colorTriggerbotInterval,
+    enabled: colorTriggerbotActive
+  }));
+
+  ipcMain.handle('probe-color-triggerbot', () => probeColorTriggerbot(appSettings));
+
+  ipcMain.handle('reapply-triggers-toggle-bind', () => {
     applyTriggersToggleBind(appSettings);
     return true;
   });
 
-  ipcMain.handle('reapply-triggers-toggle-bind', () => {
-    applyTriggersToggleBind(appSettings);
+  ipcMain.handle('reapply-colorbot-toggle-bind', () => {
+    applyColorbotToggleBind(appSettings);
     return true;
   });
 
@@ -752,6 +1423,7 @@ function setupIPC() {
         if (mainWindow) mainWindow.webContents.send('hotkey-triggered', id);
       });
       registeredHotkeys.set(id, accelerator);
+      reapplyGlobalToggleBinds();
       return true;
     } catch {
       return false;
@@ -763,6 +1435,7 @@ function setupIPC() {
       globalShortcut.unregister(registeredHotkeys.get(id));
       registeredHotkeys.delete(id);
     }
+    reapplyGlobalToggleBinds();
     return true;
   });
 
@@ -832,15 +1505,23 @@ function setupIPC() {
   // Electron's globalShortcut doesn't support mouse buttons, so we poll
   ipcMain.handle('register-mouse-trigger', (_, macroId, vkCode) => {
     if (!input) return false;
+    if (isReservedMouseToggleVk(vkCode)) return false;
     mouseTriggerBindings.set(vkCode, macroId);
     startMouseTriggerPolling();
+    reapplyGlobalToggleBinds();
     return true;
   });
 
   ipcMain.handle('unregister-mouse-trigger', (_, vkCode) => {
-    mouseTriggerBindings.delete(vkCode);
+    if (!isReservedMouseToggleVk(vkCode)) mouseTriggerBindings.delete(vkCode);
     if (mouseTriggerBindings.size === 0) stopMouseTriggerPolling();
+    reapplyGlobalToggleBinds();
     return true;
+  });
+
+  ipcMain.handle('toggle-color-triggerbot', () => {
+    toggleColorTriggerbot();
+    return { enabled: colorTriggerbotActive, active: !!colorTriggerbotInterval };
   });
 
   // ── Macro Execution ──────────────────────────────────────────────
@@ -1234,6 +1915,8 @@ function startMouseTriggerPolling() {
         if (macroId === TOGGLE_TRIGGERS_ID) {
           macroTriggersArmed = !macroTriggersArmed;
           sendMacroTriggersState();
+        } else if (macroId === TOGGLE_COLORBOT_ID) {
+          toggleColorTriggerbot();
         } else {
           if (!macroTriggersEffectivelyArmed()) continue;
           if (mainWindow) mainWindow.webContents.send('hotkey-triggered', macroId);
@@ -1263,6 +1946,8 @@ app.whenReady().then(() => {
     setAnonymousMode(true);
   }
   applyTriggersToggleBind(appSettings);
+  applyColorbotToggleBind(appSettings);
+  applyColorTriggerbot(appSettings, false);
   sendMacroTriggersState();
 });
 
@@ -1282,4 +1967,6 @@ app.on('activate', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopRecordCapturePolling();
+  stopColorTriggerbotPolling();
+  unregisterColorbotToggleBind();
 });

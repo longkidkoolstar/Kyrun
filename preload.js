@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('kyrun', {
   getMacroTriggersState: () => ipcRenderer.invoke('get-macro-triggers-state'),
   setMacroTriggersArmed: (armed) => ipcRenderer.invoke('set-macro-triggers-armed', armed),
   reapplyTriggersToggleBind: () => ipcRenderer.invoke('reapply-triggers-toggle-bind'),
+  reapplyColorbotToggleBind: () => ipcRenderer.invoke('reapply-colorbot-toggle-bind'),
+  toggleColorTriggerbot: () => ipcRenderer.invoke('toggle-color-triggerbot'),
 
   // ── Profiles ───────────────────────────────
   getProfiles: () => ipcRenderer.invoke('get-profiles'),
@@ -70,6 +72,14 @@ contextBridge.exposeInMainWorld('kyrun', {
   onAnonymousModeChanged: (cb) => ipcRenderer.on('anonymous-mode-changed', (_, status) => cb(status)),
   onHotkeyTriggered: (cb) => ipcRenderer.on('hotkey-triggered', (_, id) => cb(id)),
   onMacroTriggersState: (cb) => ipcRenderer.on('macro-triggers-state', (_, data) => cb(data)),
+  onColorTriggerbotState: (cb) => ipcRenderer.on('color-triggerbot-state', (_, data) => cb(data)),
+  getColorTriggerbotState: () => ipcRenderer.invoke('get-color-triggerbot-state'),
+  probeColorTriggerbot: () => ipcRenderer.invoke('probe-color-triggerbot'),
+  onColorTriggerbotDebug: (cb) => {
+    const fn = (_, data) => cb(data);
+    ipcRenderer.on('color-triggerbot-debug', fn);
+    return () => ipcRenderer.removeListener('color-triggerbot-debug', fn);
+  },
   onMacroState: (cb) => ipcRenderer.on('macro-state', (_, data) => cb(data)),
   onMacroLine: (cb) => ipcRenderer.on('macro-line', (_, line) => cb(line)),
 

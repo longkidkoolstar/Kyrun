@@ -46,6 +46,16 @@ const GetAsyncKeyState = user32.func('int16 GetAsyncKeyState(int vKey)');
 const GetDC = user32.func('intptr GetDC(intptr hWnd)');
 const GetPixel = gdi32.func('uint32 GetPixel(intptr hdc, int x, int y)');
 const ReleaseDC = user32.func('int ReleaseDC(intptr hWnd, intptr hDC)');
+const CreateCompatibleDC = gdi32.func('intptr CreateCompatibleDC(intptr hdc)');
+const CreateCompatibleBitmap = gdi32.func('intptr CreateCompatibleBitmap(intptr hdc, int cx, int cy)');
+const SelectObject = gdi32.func('intptr SelectObject(intptr hdc, intptr h)');
+const BitBlt = gdi32.func('bool BitBlt(intptr hdcDest, int x, int y, int cx, int cy, intptr hdcSrc, int x1, int y1, uint32 rop)');
+const DeleteObject = gdi32.func('bool DeleteObject(intptr hObject)');
+const DeleteDC = gdi32.func('bool DeleteDC(intptr hdc)');
+const GetDIBits = gdi32.func('int GetDIBits(intptr hdc, intptr hbmp, uint32 uStartScan, uint32 cScanLines, void *lpvBits, void *lpbmi, uint32 usage)');
+
+const SRCCOPY = 0x00CC0020;
+const DIB_RGB_COLORS = 0;
 
 const INPUT_KEYBOARD = 1;
 const INPUT_MOUSE = 0;
@@ -197,5 +207,62 @@ module.exports = {
       width: GetSystemMetrics(SM_CXSCREEN),
       height: GetSystemMetrics(SM_CYSCREEN)
     };
+  },
+
+  /**
+   * Capture a screen rectangle as BGR bytes (3 per pixel, top-down).
+   * Coordinates are physical pixels on the primary display.
+   */
+  captureRegion(x, y, width, height) {
+    const w = Math.max(1, Math.floor(width));
+    const h = Math.max(1, Math.floor(height));
+    const srcX = Math.floor(x);
+    const srcY = Math.floor(y);
+
+    const hdcScreen = GetDC(0);
+    if (!hdcScreen) return null;
+
+    const hdcMem = CreateCompatibleDC(hdcScreen);
+    if (!hdcMem) {
+      ReleaseDC(0, hdcScreen);
+      return null;
+    }
+
+    const hbmp = CreateCompatibleBitmap(hdcScreen, w, h);
+    if (!hbmp) {
+      DeleteDC(hdcMem);
+      ReleaseDC(0, hdcScreen);
+      return null;
+    }
+
+    const oldObj = SelectObject(hdcMem, hbmp);
+    BitBlt(hdcMem, 0, 0, w, h, hdcScreen, srcX, srcY, SRCCOPY);
+
+    const bmi = Buffer.alloc(40);
+    bmi.writeUInt32LE(40, 0);
+    bmi.writeInt32LE(w, 4);
+    bmi.writeInt32LE(-h, 8);
+    bmi.writeUInt16LE(1, 12);
+    bmi.writeUInt16LE(32, 14);
+    bmi.writeUInt32LE(0, 16);
+
+    const bgra = Buffer.alloc(w * h * 4);
+    GetDIBits(hdcMem, hbmp, 0, h, bgra, bmi, DIB_RGB_COLORS);
+
+    SelectObject(hdcMem, oldObj);
+    DeleteObject(hbmp);
+    DeleteDC(hdcMem);
+    ReleaseDC(0, hdcScreen);
+
+    const bgr = Buffer.alloc(w * h * 3);
+    for (let i = 0; i < w * h; i++) {
+      const si = i * 4;
+      const di = i * 3;
+      bgr[di] = bgra[si];
+      bgr[di + 1] = bgra[si + 1];
+      bgr[di + 2] = bgra[si + 2];
+    }
+
+    return { width: w, height: h, data: bgr };
   }
 };
