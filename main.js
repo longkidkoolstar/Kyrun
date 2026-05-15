@@ -934,6 +934,27 @@ function setupIPC() {
       return Number.isFinite(n) ? Math.round(n) : 0;
     }
 
+    function isUnsetCoord(value) {
+      return value === undefined || value === null || value === '';
+    }
+
+    function resolveWaitPosition(cmd, xKey, yKey, fallbackXKey = 'x', fallbackYKey = 'y') {
+      const rawX = cmd[xKey];
+      const rawY = cmd[yKey];
+      if (isUnsetCoord(rawX) || isUnsetCoord(rawY)) {
+        return { x: toCoord(cmd[fallbackXKey]), y: toCoord(cmd[fallbackYKey]) };
+      }
+      const x = toCoord(rawX);
+      const y = toCoord(rawY);
+      const fx = toCoord(cmd[fallbackXKey]);
+      const fy = toCoord(cmd[fallbackYKey]);
+      // Legacy macros stored 0,0 before a position was picked; fall back to shared x/y.
+      if (x === 0 && y === 0 && (fx !== 0 || fy !== 0)) {
+        return { x: fx, y: fy };
+      }
+      return { x, y };
+    }
+
     function getWaitTimingOptions(cmd) {
       const rawPollMs = Number(cmd.pollMs);
       const pollMs = Number.isFinite(rawPollMs) && rawPollMs > 0 ? Math.min(1000, Math.max(1, Math.round(rawPollMs))) : 16;
@@ -951,10 +972,11 @@ function setupIPC() {
     }
 
     function pixelConditionMatches(cmd) {
-      const expectedColor = parseHexColor(cmd.color);
+      const expectedColor = parseHexColor(cmd.color || 'FF0000');
       if (!expectedColor) return false;
       const sampledColor = input.getPixelColor(toCoord(cmd.x), toCoord(cmd.y));
-      const matched = colorsMatchWithinTolerance(sampledColor, expectedColor, cmd.tolerance);
+      const tolerance = cmd.tolerance ?? 10;
+      const matched = colorsMatchWithinTolerance(sampledColor, expectedColor, tolerance);
       return (cmd.mode || 'match') === 'notMatch' ? !matched : matched;
     }
 
@@ -984,36 +1006,36 @@ function setupIPC() {
 
     async function waitForPixelColor(cmd) {
       const mode = cmd.mode || 'match';
+      const tolerance = cmd.tolerance ?? 10;
+
       if (mode === 'transition') {
-        const fromColor = parseHexColor(cmd.fromColor);
-        const toColor = parseHexColor(cmd.toColor);
+        const fromColor = parseHexColor(cmd.fromColor || cmd.color || 'FF0000');
+        const toColor = parseHexColor(cmd.toColor || '00FF00');
         if (!fromColor || !toColor) return;
         let sawFromColor = false;
         return await waitForPixelPredicate(cmd, sampledColor => {
           if (!sawFromColor) {
-            if (colorsMatchWithinTolerance(sampledColor, fromColor, cmd.tolerance)) sawFromColor = true;
+            if (colorsMatchWithinTolerance(sampledColor, fromColor, tolerance)) sawFromColor = true;
             return false;
           }
-          return colorsMatchWithinTolerance(sampledColor, toColor, cmd.tolerance);
+          return colorsMatchWithinTolerance(sampledColor, toColor, tolerance);
         });
       }
 
       if (mode === 'orMatch') {
-        const colorA = parseHexColor(cmd.colorA);
-        const colorB = parseHexColor(cmd.colorB);
+        const colorA = parseHexColor(cmd.colorA || cmd.color || 'FF0000');
+        const colorB = parseHexColor(cmd.colorB || '00FF00');
         if (!colorA || !colorB) return;
-        const xA = toCoord(cmd.xA ?? cmd.x ?? 0);
-        const yA = toCoord(cmd.yA ?? cmd.y ?? 0);
-        const xB = toCoord(cmd.xB ?? cmd.x ?? 0);
-        const yB = toCoord(cmd.yB ?? cmd.y ?? 0);
+        const posA = resolveWaitPosition(cmd, 'xA', 'yA');
+        const posB = resolveWaitPosition(cmd, 'xB', 'yB');
         const { pollMs, timeoutMs, deadline } = getWaitTimingOptions(cmd);
 
         while (!macroAbort) {
           if (releaseVk && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
-          const sampledColorA = input.getPixelColor(xA, yA);
-          if (colorsMatchWithinTolerance(sampledColorA, colorA, cmd.tolerance)) return true;
-          const sampledColorB = input.getPixelColor(xB, yB);
-          if (colorsMatchWithinTolerance(sampledColorB, colorB, cmd.tolerance)) return true;
+          const sampledColorA = input.getPixelColor(posA.x, posA.y);
+          if (colorsMatchWithinTolerance(sampledColorA, colorA, tolerance)) return true;
+          const sampledColorB = input.getPixelColor(posB.x, posB.y);
+          if (colorsMatchWithinTolerance(sampledColorB, colorB, tolerance)) return true;
           const remainingMs = deadline - Date.now();
           if (remainingMs <= 0) return false;
           const nextSleepMs = timeoutMs > 0 ? Math.min(pollMs, Math.max(1, remainingMs)) : pollMs;
@@ -1022,12 +1044,12 @@ function setupIPC() {
         return false;
       }
 
-      const expectedColor = parseHexColor(cmd.color);
+      const expectedColor = parseHexColor(cmd.color || 'FF0000');
       if (!expectedColor) return;
       if (mode === 'notMatch') {
-        return await waitForPixelPredicate(cmd, sampledColor => !colorsMatchWithinTolerance(sampledColor, expectedColor, cmd.tolerance));
+        return await waitForPixelPredicate(cmd, sampledColor => !colorsMatchWithinTolerance(sampledColor, expectedColor, tolerance));
       }
-      return await waitForPixelPredicate(cmd, sampledColor => colorsMatchWithinTolerance(sampledColor, expectedColor, cmd.tolerance));
+      return await waitForPixelPredicate(cmd, sampledColor => colorsMatchWithinTolerance(sampledColor, expectedColor, tolerance));
     }
 
     async function runOnce(cmds) {

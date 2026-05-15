@@ -28,6 +28,47 @@ const KEY_CODE_MAP = {
 // Incremented on each openMacro so stale async reads cannot overwrite the editor.
 let openMacroGeneration = 0;
 
+function isUnsetCoord(value) {
+  return value === undefined || value === null || value === '';
+}
+
+function resolveWaitPosition(cmd, xKey, yKey, fallbackXKey = 'x', fallbackYKey = 'y') {
+  const rawX = cmd[xKey];
+  const rawY = cmd[yKey];
+  const toRounded = value => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.round(n) : 0;
+  };
+  if (isUnsetCoord(rawX) || isUnsetCoord(rawY)) {
+    return { x: toRounded(cmd[fallbackXKey]), y: toRounded(cmd[fallbackYKey]) };
+  }
+  const x = toRounded(rawX);
+  const y = toRounded(rawY);
+  const fx = toRounded(cmd[fallbackXKey]);
+  const fy = toRounded(cmd[fallbackYKey]);
+  if (x === 0 && y === 0 && (fx !== 0 || fy !== 0)) {
+    return { x: fx, y: fy };
+  }
+  return { x, y };
+}
+
+function syncOrMatchPositions(cmd) {
+  const x = cmd.x ?? 0;
+  const y = cmd.y ?? 0;
+  const shouldSyncA = isUnsetCoord(cmd.xA) || isUnsetCoord(cmd.yA)
+    || (cmd.xA === 0 && cmd.yA === 0 && (x !== 0 || y !== 0));
+  const shouldSyncB = isUnsetCoord(cmd.xB) || isUnsetCoord(cmd.yB)
+    || (cmd.xB === 0 && cmd.yB === 0 && (x !== 0 || y !== 0));
+  if (shouldSyncA) {
+    cmd.xA = x;
+    cmd.yA = y;
+  }
+  if (shouldSyncB) {
+    cmd.xB = x;
+    cmd.yB = y;
+  }
+}
+
 // ── State ────────────────────────────────────────────────────
 const state = {
   currentProfile: 'Default',
@@ -774,11 +815,9 @@ function formatParams(cmd) {
       const timeoutText = `(${cmd.timeoutMs ?? 1000} ms max)`;
       if (mode === 'notMatch') return `Wait until (${cmd.x},${cmd.y}) is not #${cmd.color} <=${cmd.tolerance ?? 10} ${timeoutText}`;
       if (mode === 'orMatch') {
-        const xA = cmd.xA ?? cmd.x ?? 0;
-        const yA = cmd.yA ?? cmd.y ?? 0;
-        const xB = cmd.xB ?? cmd.x ?? 0;
-        const yB = cmd.yB ?? cmd.y ?? 0;
-        return `Wait for A (${xA},${yA}) #${cmd.colorA || cmd.color || 'FF0000'} or B (${xB},${yB}) #${cmd.colorB || '00FF00'} <=${cmd.tolerance ?? 10} ${timeoutText}`;
+        const posA = resolveWaitPosition(cmd, 'xA', 'yA');
+        const posB = resolveWaitPosition(cmd, 'xB', 'yB');
+        return `Wait for A (${posA.x},${posA.y}) #${cmd.colorA || cmd.color || 'FF0000'} or B (${posB.x},${posB.y}) #${cmd.colorB || '00FF00'} <=${cmd.tolerance ?? 10} ${timeoutText}`;
       }
       if (mode === 'transition') return `Wait for (${cmd.x},${cmd.y}) #${cmd.fromColor} -> #${cmd.toColor} <=${cmd.tolerance ?? 10} ${timeoutText}`;
       return `Wait for (${cmd.x},${cmd.y}) #${cmd.color} <=${cmd.tolerance ?? 10} ${timeoutText}`;
@@ -842,6 +881,7 @@ function showCommandProperties(idx) {
         + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 0 0;line-height:1.35">Place this before a block. If the condition fails, Kyrun skips every line through the line number above. The jump toggle also lets Kyrun skip ahead to this block before it would normally reach it.</p>`;
       break;
     case 'WaitForPixelColor':
+      if (waitMode === 'orMatch') syncOrMatchPositions(cmd);
       html = waitModeField;
       if (waitMode === 'transition') {
         html += field('X','x','number') + field('Y','y','number');
@@ -853,15 +893,17 @@ function showCommandProperties(idx) {
           + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-to-color-screenshot">🖼 Pick "To" from Screenshot</button>`
           + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 8px 0;line-height:1.35">This waits until the pixel first becomes the From color, then later becomes the To color.</p>`;
       } else if (waitMode === 'orMatch') {
-        html += field('Position A X','xA','number', cmd.xA ?? cmd.x ?? 0)
-          + field('Position A Y','yA','number', cmd.yA ?? cmd.y ?? 0)
+        const posA = resolveWaitPosition(cmd, 'xA', 'yA');
+        const posB = resolveWaitPosition(cmd, 'xB', 'yB');
+        html += field('Position A X','xA','number', posA.x)
+          + field('Position A Y','yA','number', posA.y)
           + field('Color A (hex)','colorA','text', cmd.colorA || cmd.color || 'FF0000')
           + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-a">📍 Pick Position A</button>`
           + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-a-screenshot">🖼 Pick Pos A from Screenshot</button>`
           + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-a">🎨 Pick Color A</button>`
           + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-a-screenshot">🖼 Pick Color A from Screenshot</button>`
-          + field('Position B X','xB','number', cmd.xB ?? cmd.x ?? 0)
-          + field('Position B Y','yB','number', cmd.yB ?? cmd.y ?? 0)
+          + field('Position B X','xB','number', posB.x)
+          + field('Position B Y','yB','number', posB.y)
           + field('Color B (hex)','colorB','text', cmd.colorB || '00FF00')
           + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-b">📍 Pick Position B</button>`
           + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-pos-b-screenshot">🖼 Pick Pos B from Screenshot</button>`
@@ -901,10 +943,7 @@ function showCommandProperties(idx) {
           if (!state.commands[i].fromColor) state.commands[i].fromColor = state.commands[i].color || 'FF0000';
           if (!state.commands[i].toColor) state.commands[i].toColor = '00FF00';
         } else if (val === 'orMatch') {
-          if (state.commands[i].xA === undefined) state.commands[i].xA = state.commands[i].x ?? 0;
-          if (state.commands[i].yA === undefined) state.commands[i].yA = state.commands[i].y ?? 0;
-          if (state.commands[i].xB === undefined) state.commands[i].xB = state.commands[i].x ?? 0;
-          if (state.commands[i].yB === undefined) state.commands[i].yB = state.commands[i].y ?? 0;
+          syncOrMatchPositions(state.commands[i]);
           if (!state.commands[i].colorA) state.commands[i].colorA = state.commands[i].color || state.commands[i].fromColor || 'FF0000';
           if (!state.commands[i].colorB) state.commands[i].colorB = state.commands[i].toColor || '00FF00';
         } else {
@@ -1020,7 +1059,7 @@ function addCommand(type) {
     case 'Comment': cmds = [{ type, value: 'Comment' }]; break;
     case 'ColorDetect': cmds = [{ type, x: 0, y: 0, color: 'FF0000', tolerance: 10 }]; break;
     case 'RunIfColor': cmds = [{ type, mode: 'match', x: 0, y: 0, color: 'FF0000', tolerance: 10, endLine: Math.max(2, insertAt + 2), jumpOnMatch: false, playSoundOnMatch: false }]; break;
-    case 'WaitForPixelColor': cmds = [{ type, mode: 'match', x: 0, y: 0, xA: 0, yA: 0, xB: 0, yB: 0, color: 'FF0000', colorA: 'FF0000', colorB: '00FF00', fromColor: 'FF0000', toColor: '00FF00', tolerance: 10, timeoutMs: 1000, pollMs: 16, playSoundOnMatch: false }]; break;
+    case 'WaitForPixelColor': cmds = [{ type, mode: 'match', x: 0, y: 0, color: 'FF0000', colorA: 'FF0000', colorB: '00FF00', fromColor: 'FF0000', toColor: '00FF00', tolerance: 10, timeoutMs: 1000, pollMs: 16, playSoundOnMatch: false }]; break;
     case 'Variable': cmds = [{ type, varName: 'var1', operation: '=', varValue: 0 }]; break;
     default: cmds = [{ type }]; break;
   }
