@@ -2298,10 +2298,10 @@ function syncColorTriggerbotPanels() {
   const rgb = $('#color-trigger-rgb-panel');
   const hsv = $('#color-trigger-hsv-panel');
   const tolRow = $('#color-trigger-tolerance-row');
-  if (preset) preset.hidden = source !== 'preset';
-  if (rgb) rgb.hidden = source !== 'customRgb';
+  if (preset) preset.hidden = source !== 'preset' && source !== 'mixed';
+  if (rgb) rgb.hidden = source !== 'customRgb' && source !== 'mixed';
   if (hsv) hsv.hidden = source !== 'customHsv';
-  if (tolRow) tolRow.hidden = source !== 'preset' && source !== 'customRgb';
+  if (tolRow) tolRow.hidden = source !== 'preset' && source !== 'customRgb' && source !== 'mixed';
   const holdOn = !!($('#setting-color-trigger-hold')?.checked);
   const clickPanel = $('#color-trigger-click-panel');
   if (clickPanel) clickPanel.hidden = holdOn;
@@ -2374,10 +2374,12 @@ function formatColorTriggerDebug(data) {
   if (data.fallbackCenterHex) lines.push(`GetPixel fallback center: #${data.fallbackCenterHex}`);
   if (data.source) lines.push(`Color source: ${data.source}`);
   if (data.preset) {
-    lines.push(`Preset: ${data.preset}${data.tolerance != null ? ` tolerance=${data.tolerance}` : ''}`);
+    const p = Array.isArray(data.preset) ? data.preset.join(', ') : data.preset;
+    lines.push(`Presets: ${p}${data.tolerance != null ? ` tolerance=${data.tolerance}` : ''}`);
   }
   if (data.targetColor != null) {
-    lines.push(`Target RGB: #${data.targetColor} tol=${data.tolerance} valid=${data.targetColorValid !== false}`);
+    const c = Array.isArray(data.targetColor) ? data.targetColor.map(x => `#${x}`).join(', ') : `#${data.targetColor}`;
+    lines.push(`Target RGB: ${c} tol=${data.tolerance} valid=${data.targetColorValid !== false}`);
   }
   if (data.hsvLower) {
     lines.push((data.preset ? 'Effective preset HSV min' : 'HSV lower') + `: ${data.hsvLower.join(',')}`);
@@ -2432,7 +2434,7 @@ async function applyColorTriggerHexFromPicker(hex, { fillHsv = false } = {}) {
     showToast(fillHsv ? `HSV range set from #${hex}` : `Color #${hex} saved`, 'success');
 }
 
-function openColorTriggerScreenshotPicker(capture, { fillHsv = false } = {}) {
+function openColorTriggerScreenshotPicker(capture, { fillHsv = false, onPick = null } = {}) {
   if (!capture?.imageDataUrl) {
     showToast('Screenshot capture failed', 'error');
     return;
@@ -2497,7 +2499,11 @@ function openColorTriggerScreenshotPicker(capture, { fillHsv = false } = {}) {
       const sample = sampleFromEvent(e);
       if (!sample) return;
       hideModal();
-      await applyColorTriggerHexFromPicker(sample.hex, { fillHsv });
+      if (onPick) {
+        onPick(sample.hex);
+      } else {
+        await applyColorTriggerHexFromPicker(sample.hex, { fillHsv });
+      }
     };
 
     const cleanup = () => {
@@ -2862,8 +2868,40 @@ function loadColorTriggerbotToForm(s) {
   const cttoe = $('#setting-color-trigger-toggle-enabled');
   const cttob = $('#setting-color-trigger-toggle-bind');
   if (cts) cts.value = s.colorTriggerbotSource || 'preset';
-  if (ctp) ctp.value = s.colorTriggerbotPreset || 'bluegreen';
-  if (ctc) ctc.value = (s.colorTriggerbotColor || 'FF0000').replace(/^#/, '');
+
+  // Presets (Multiple)
+  let presets = s.colorTriggerbotPreset || ['bluegreen'];
+  if (!Array.isArray(presets)) presets = [presets];
+  document.querySelectorAll('.setting-color-trigger-preset-check').forEach(el => {
+    el.checked = presets.includes(el.value);
+  });
+
+  // Custom RGB (Multiple)
+  let colors = s.colorTriggerbotColor || ['FF0000'];
+  if (!Array.isArray(colors)) colors = [colors];
+  const rgbList = $('#color-trigger-rgb-list');
+  if (rgbList) {
+    rgbList.innerHTML = '';
+    colors.forEach((hex, idx) => {
+      const row = document.createElement('div');
+      row.className = 'color-triggerbot-rgb-row';
+      row.style.display = 'flex';
+      row.style.gap = '6px';
+      row.style.alignItems = 'center';
+      row.style.marginBottom = '8px';
+      row.innerHTML = `
+        <input type="text" class="properties-panel__input setting-color-trigger-color" style="width:75px" maxlength="6" value="${hex.replace(/^#/, '')}">
+        <button type="button" class="btn btn--secondary btn-color-trigger-pick-rgb" title="Pick from cursor" style="padding: 4px 8px;">Pick</button>
+        <button type="button" class="btn btn--secondary btn-color-trigger-pick-rgb-shot" title="Pick from screenshot" style="padding: 4px 8px;">Shot</button>
+        ${idx === 0 
+          ? '<button type="button" class="btn btn--secondary btn-color-trigger-add-rgb" style="padding: 4px 8px; font-weight: bold;">+</button>' 
+          : '<button type="button" class="btn btn--secondary btn-color-trigger-remove-rgb" style="padding: 4px 8px; font-weight: bold;">-</button>'}
+      `;
+      rgbList.appendChild(row);
+    });
+    wireColorTriggerRgbRowEvents(rgbList);
+  }
+
   if (ctt) ctt.value = s.colorTriggerbotTolerance != null ? s.colorTriggerbotTolerance : 10;
   const lo = s.colorTriggerbotHsvLower || [80, 40, 225];
   const hi = s.colorTriggerbotHsvUpper || [90, 100, 255];
@@ -2897,6 +2935,89 @@ function loadColorTriggerbotToForm(s) {
   syncColorTriggerbotPanels();
 }
 
+function wireColorTriggerRgbRowEvents(container) {
+  container.querySelectorAll('.btn-color-trigger-add-rgb').forEach(btn => {
+    btn.onclick = () => {
+      const row = document.createElement('div');
+      row.className = 'color-triggerbot-rgb-row';
+      row.style.display = 'flex';
+      row.style.gap = '6px';
+      row.style.alignItems = 'center';
+      row.style.marginBottom = '8px';
+      row.innerHTML = `
+        <input type="text" class="properties-panel__input setting-color-trigger-color" style="width:75px" maxlength="6" placeholder="FF0000">
+        <button type="button" class="btn btn--secondary btn-color-trigger-pick-rgb" title="Pick from cursor" style="padding: 4px 8px;">Pick</button>
+        <button type="button" class="btn btn--secondary btn-color-trigger-pick-rgb-shot" title="Pick from screenshot" style="padding: 4px 8px;">Shot</button>
+        <button type="button" class="btn btn--secondary btn-color-trigger-remove-rgb" style="padding: 4px 8px; font-weight: bold;">-</button>
+      `;
+      container.appendChild(row);
+      wireColorTriggerRgbRowEvents(container);
+      void saveColorTriggerbotSettings({ toast: false });
+    };
+  });
+  container.querySelectorAll('.btn-color-trigger-remove-rgb').forEach(btn => {
+    btn.onclick = () => {
+      btn.closest('.color-triggerbot-rgb-row').remove();
+      void saveColorTriggerbotSettings({ toast: false });
+    };
+  });
+  container.querySelectorAll('.setting-color-trigger-color').forEach(el => {
+    el.onchange = () => { void saveColorTriggerbotSettings({ toast: false }); };
+    el.oninput = () => scheduleColorTriggerbotSave();
+  });
+  container.querySelectorAll('.btn-color-trigger-pick-rgb').forEach(btn => {
+    btn.onclick = async () => {
+      const input = btn.closest('.color-triggerbot-rgb-row').querySelector('.setting-color-trigger-color');
+      await pickColorForInput(input, { fillHsv: false });
+    };
+  });
+  container.querySelectorAll('.btn-color-trigger-pick-rgb-shot').forEach(btn => {
+    btn.onclick = async () => {
+      const input = btn.closest('.color-triggerbot-rgb-row').querySelector('.setting-color-trigger-color');
+      await pickColorFromScreenshotForInput(input, { fillHsv: false });
+    };
+  });
+}
+
+async function pickColorForInput(input, { fillHsv = false } = {}) {
+  if (!state.hasRobot) {
+    showToast('Native input required to pick colors', 'error');
+    return;
+  }
+  showToast('Move cursor to target pixel, then wait…', 'info');
+  await new Promise(r => setTimeout(r, 1200));
+  try {
+    const pos = await window.kyrun.getMousePosition();
+    const hex = await window.kyrun.getPixelColor(pos.x, pos.y);
+    if (input) input.value = hex.replace(/^#/, '').toUpperCase();
+    if (fillHsv) {
+      await applyColorTriggerHexFromPicker(hex, { fillHsv: true });
+    }
+    void saveColorTriggerbotSettings({ toast: false });
+  } catch {
+    showToast('Screen capture failed', 'error');
+  }
+}
+
+async function pickColorFromScreenshotForInput(input, { fillHsv = false } = {}) {
+  try {
+    const capture = await window.kyrun.captureScreenFrame();
+    if (!capture?.success) {
+      showToast(capture?.error || 'Screenshot capture failed', 'error');
+      return;
+    }
+    openColorTriggerScreenshotPicker(capture, { 
+      fillHsv, 
+      onPick: (hex) => {
+        if (input) input.value = hex.replace(/^#/, '').toUpperCase();
+        void saveColorTriggerbotSettings({ toast: false });
+      }
+    });
+  } catch {
+    showToast('Screenshot capture failed', 'error');
+  }
+}
+
 async function refreshColorTriggerbotEnabledFromMain() {
   try {
     const ct = await window.kyrun.getColorTriggerbotState();
@@ -2917,8 +3038,6 @@ function mergeColorTriggerbotFormIntoSettings(settings) {
 function readColorTriggerbotFromForm(settings) {
   const en = $('#setting-color-trigger-enabled');
   const src = $('#setting-color-trigger-source');
-  const preset = $('#setting-color-trigger-preset');
-  const color = $('#setting-color-trigger-color');
   const tol = $('#setting-color-trigger-tolerance');
   const h0 = $('#setting-color-trigger-h0');
   const s0 = $('#setting-color-trigger-s0');
@@ -2948,8 +3067,19 @@ function readColorTriggerbotFromForm(settings) {
   settings.colorTriggerbotEnabled = !!(en && en.checked);
   settings.colorTriggerbotToggleBindEnabled = !!(toggleEn && toggleEn.checked);
   settings.colorTriggerbotSource = src ? src.value : 'preset';
-  settings.colorTriggerbotPreset = preset ? preset.value : 'bluegreen';
-  settings.colorTriggerbotColor = (color ? color.value : 'FF0000').replace(/^#/, '').toUpperCase();
+
+  // Presets (Multiple)
+  const selectedPresets = Array.from(document.querySelectorAll('.setting-color-trigger-preset-check'))
+    .filter(cb => cb.checked)
+    .map(cb => cb.value);
+  settings.colorTriggerbotPreset = selectedPresets.length > 0 ? selectedPresets : ['bluegreen'];
+
+  // Custom RGB (Multiple)
+  const selectedColors = Array.from(document.querySelectorAll('.setting-color-trigger-color'))
+    .map(input => (input.value || '').replace(/^#/, '').toUpperCase())
+    .filter(val => /^[0-9A-F]{6}$/.test(val));
+  settings.colorTriggerbotColor = selectedColors.length > 0 ? selectedColors : ['FF0000'];
+
   settings.colorTriggerbotTolerance = Math.min(255, Math.max(0, parseInt(tol?.value, 10) || 10));
   settings.colorTriggerbotHsvLower = [
     parseInt(h0?.value, 10) || 0,
@@ -3180,11 +3310,13 @@ function wireSettingsControls() {
       await saveColorTriggerbotSettings({ toast: false });
     });
   }
-  const ctp = $('#setting-color-trigger-preset');
-  if (ctp) ctp.addEventListener('change', () => { void saveColorTriggerbotSettings({ toast: false }); });
+  
+  // Presets (Multiple)
+  document.querySelectorAll('.setting-color-trigger-preset-check').forEach(cb => {
+    cb.addEventListener('change', () => { void saveColorTriggerbotSettings({ toast: false }); });
+  });
 
   const colorTriggerInputs = [
-    '#setting-color-trigger-color',
     '#setting-color-trigger-tolerance',
     '#setting-color-trigger-h0', '#setting-color-trigger-s0', '#setting-color-trigger-v0',
     '#setting-color-trigger-h1', '#setting-color-trigger-s1', '#setting-color-trigger-v1',

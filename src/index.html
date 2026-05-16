@@ -439,21 +439,22 @@
               <select class="properties-panel__input" id="setting-color-trigger-source" style="width:180px">
                 <option value="preset">Preset (HSV)</option>
                 <option value="customRgb">Custom RGB</option>
+                <option value="mixed">Mixed (Presets + RGB)</option>
                 <option value="customHsv">Custom HSV</option>
               </select>
             </div>
             <div class="settings-view__row color-triggerbot-panel" id="color-trigger-preset-panel">
               <div>
-                <div class="settings-view__row-label">Enemy color preset</div>
+                <div class="settings-view__row-label">Enemy color presets</div>
+                <div class="settings-view__row-desc">Select one or more colors to trigger on.</div>
               </div>
-              <select class="properties-panel__input" id="setting-color-trigger-preset" style="width:180px">
-                <option value="bluegreen">Blue-green</option>
-                <option value="pinkishpurple">Pinkish purple</option>
-                <option value="green">Green</option>
-                <option value="pink">Pink</option>
-              </select>
-            </div>
-            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-tolerance-row">
+              <div class="preset-checkbox-group" style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--text-secondary);"><input type="checkbox" class="setting-color-trigger-preset-check" value="bluegreen"> Blue-green</label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--text-secondary);"><input type="checkbox" class="setting-color-trigger-preset-check" value="pinkishpurple"> Pinkish purple</label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--text-secondary);"><input type="checkbox" class="setting-color-trigger-preset-check" value="green"> Green</label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--text-secondary);"><input type="checkbox" class="setting-color-trigger-preset-check" value="pink"> Pink</label>
+              </div>
+            </div>            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-tolerance-row">
               <div>
                 <div class="settings-view__row-label">Tolerance</div>
                 <div class="settings-view__row-desc">Preset: widens H/S/V bands (0 = strict preset only). Custom RGB: max distance per channel to target color.</div>
@@ -462,13 +463,16 @@
             </div>
             <div class="settings-view__row color-triggerbot-panel" id="color-trigger-rgb-panel" hidden>
               <div>
-                <div class="settings-view__row-label">Target color</div>
-                <div class="settings-view__row-desc">Pick from screen or enter hex (RRGGBB).</div>
+                <div class="settings-view__row-label">Target colors</div>
+                <div class="settings-view__row-desc">Pick from screen or enter hex (RRGGBB). You can add multiple colors.</div>
               </div>
-              <div class="color-triggerbot-rgb-row">
-                <input type="text" class="properties-panel__input" id="setting-color-trigger-color" style="width:90px" maxlength="6" placeholder="FF0000">
-                <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-rgb">Pick (cursor)</button>
-                <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-rgb-shot">Pick (screenshot)</button>
+              <div id="color-trigger-rgb-list" style="display: flex; flex-direction: column; gap: 8px;">
+                <div class="color-triggerbot-rgb-row" style="display: flex; gap: 6px; align-items: center;">
+                  <input type="text" class="properties-panel__input setting-color-trigger-color" style="width:75px" maxlength="6" placeholder="FF0000">
+                  <button type="button" class="btn btn--secondary btn-color-trigger-pick-rgb" title="Pick from cursor" style="padding: 4px 8px;">Pick</button>
+                  <button type="button" class="btn btn--secondary btn-color-trigger-pick-rgb-shot" title="Pick from screenshot" style="padding: 4px 8px;">Shot</button>
+                  <button type="button" class="btn btn--secondary btn-color-trigger-add-rgb" style="padding: 4px 8px; font-weight: bold;">+</button>
+                </div>
               </div>
             </div>
             <div class="settings-view__row color-triggerbot-panel" id="color-trigger-hsv-panel" hidden>

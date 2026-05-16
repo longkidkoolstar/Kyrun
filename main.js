@@ -299,30 +299,52 @@ function expandPresetHsvBounds(lower, upper, toleranceRaw) {
 
 function buildColorTriggerbotMatcher(settings) {
   const source = settings.colorTriggerbotSource || 'preset';
-  if (source === 'preset') {
-    const key = String(settings.colorTriggerbotPreset || 'bluegreen').toLowerCase();
-    const preset = COLOR_TRIGGERBOT_PRESETS[key] || COLOR_TRIGGERBOT_PRESETS.bluegreen;
+  const matchers = [];
+
+  if (source === 'preset' || source === 'mixed') {
+    let presets = settings.colorTriggerbotPreset || 'bluegreen';
+    if (!Array.isArray(presets)) presets = [presets];
     const tolerance = settings.colorTriggerbotTolerance ?? 10;
-    const { lower, upper } = expandPresetHsvBounds(preset.lower, preset.upper, tolerance);
-    return (r, g, b) => {
+    
+    const hsvMatchers = presets.map(p => {
+      const key = String(p).toLowerCase();
+      const preset = COLOR_TRIGGERBOT_PRESETS[key] || COLOR_TRIGGERBOT_PRESETS.bluegreen;
+      const bounds = expandPresetHsvBounds(preset.lower, preset.upper, tolerance);
+      return { lower: bounds.lower, upper: bounds.upper };
+    });
+
+    matchers.push((r, g, b) => {
       const { h, s, v } = rgbToHsv(r, g, b);
-      return hsvInRange(h, s, v, lower, upper);
-    };
+      return hsvMatchers.some(m => hsvInRange(h, s, v, m.lower, m.upper));
+    });
   }
+
+  if (source === 'customRgb' || source === 'mixed') {
+    let colors = settings.colorTriggerbotColor || 'FF0000';
+    if (!Array.isArray(colors)) colors = [colors];
+    const tolerance = settings.colorTriggerbotTolerance ?? 10;
+    
+    const expectedColors = colors.map(c => parseHexColor(c)).filter(c => !!c);
+    if (expectedColors.length > 0) {
+      matchers.push((r, g, b) => {
+        const actual = { r, g, b };
+        return expectedColors.some(expected => colorsMatchWithinTolerance(actual, expected, tolerance));
+      });
+    }
+  }
+
   if (source === 'customHsv') {
     const lower = normalizeHsvBound(settings.colorTriggerbotHsvLower, [0, 0, 0]);
     const upper = normalizeHsvBound(settings.colorTriggerbotHsvUpper, [179, 255, 255]);
-    return (r, g, b) => {
+    matchers.push((r, g, b) => {
       const { h, s, v } = rgbToHsv(r, g, b);
       return hsvInRange(h, s, v, lower, upper);
-    };
+    });
   }
-  const expected = parseHexColor(settings.colorTriggerbotColor || 'FF0000');
-  const tolerance = settings.colorTriggerbotTolerance ?? 10;
-  if (!expected) {
-    return () => false;
-  }
-  return (r, g, b) => colorsMatchWithinTolerance({ r, g, b }, expected, tolerance);
+
+  if (matchers.length === 0) return () => false;
+  if (matchers.length === 1) return matchers[0];
+  return (r, g, b) => matchers.some(m => m(r, g, b));
 }
 
 function rgbBytesToHex(r, g, b) {
@@ -544,20 +566,26 @@ function probeColorTriggerbot(settings) {
   const source = settings.colorTriggerbotSource || 'preset';
   const extra = {};
   if (source === 'customRgb') {
-    extra.targetColor = settings.colorTriggerbotColor || 'FF0000';
+    let colors = settings.colorTriggerbotColor || 'FF0000';
+    if (!Array.isArray(colors)) colors = [colors];
+    extra.targetColor = colors;
     extra.tolerance = settings.colorTriggerbotTolerance ?? 10;
-    extra.targetColorValid = !!parseHexColor(extra.targetColor);
+    extra.targetColorValid = colors.every(c => !!parseHexColor(c));
   }
   if (source === 'customHsv') {
     extra.hsvLower = normalizeHsvBound(settings.colorTriggerbotHsvLower, [0, 0, 0]);
     extra.hsvUpper = normalizeHsvBound(settings.colorTriggerbotHsvUpper, [179, 255, 255]);
   }
   if (source === 'preset') {
-    extra.preset = settings.colorTriggerbotPreset || 'bluegreen';
+    let presets = settings.colorTriggerbotPreset || 'bluegreen';
+    if (!Array.isArray(presets)) presets = [presets];
+    extra.preset = presets;
     extra.tolerance = settings.colorTriggerbotTolerance ?? 10;
-    const key = String(extra.preset).toLowerCase();
-    const preset = COLOR_TRIGGERBOT_PRESETS[key] || COLOR_TRIGGERBOT_PRESETS.bluegreen;
-    const bounds = expandPresetHsvBounds(preset.lower, preset.upper, extra.tolerance);
+    
+    // For debug display, we'll just show the bounds of the first preset or a merged range
+    const firstKey = String(presets[0]).toLowerCase();
+    const firstPreset = COLOR_TRIGGERBOT_PRESETS[firstKey] || COLOR_TRIGGERBOT_PRESETS.bluegreen;
+    const bounds = expandPresetHsvBounds(firstPreset.lower, firstPreset.upper, extra.tolerance);
     extra.hsvLower = bounds.lower;
     extra.hsvUpper = bounds.upper;
   }
