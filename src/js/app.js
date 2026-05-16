@@ -2195,6 +2195,7 @@ async function renderProfileHotkeys() {
         if (!settings.profileHotkeys[profile]) return;
         delete settings.profileHotkeys[profile];
         input.value = '';
+        mergeColorTriggerbotFormIntoSettings(settings);
         await window.kyrun.saveSettings(settings);
         scheduleReloadProfileTriggers(400);
         showToast(`Unbound ${profile}`, 'info');
@@ -2226,6 +2227,7 @@ async function renderProfileHotkeys() {
         async function saveBind(prof, n) {
           settings.profileHotkeys = settings.profileHotkeys || {};
           settings.profileHotkeys[prof] = n;
+          mergeColorTriggerbotFormIntoSettings(settings);
           await window.kyrun.saveSettings(settings);
           scheduleReloadProfileTriggers(400);
           showToast(`Bound ${n} to ${prof}`, 'success');
@@ -2820,6 +2822,7 @@ async function deleteColorbotProfile() {
 }
 
 function loadColorTriggerbotToForm(s) {
+  const cte = $('#setting-color-trigger-enabled');
   const cts = $('#setting-color-trigger-source');
   const ctp = $('#setting-color-trigger-preset');
   const ctc = $('#setting-color-trigger-color');
@@ -2895,13 +2898,12 @@ async function refreshColorTriggerbotEnabledFromMain() {
   }
 }
 
-/** Parse bounded integer from settings UI; keeps prior saved value when input is blank or invalid (avoids resetting e.g. poll to 16). */
-function clampIntFromInput(el, min, max, prior, hardDefault) {
-  const fallback = Number.isFinite(Number(prior)) ? Math.round(Number(prior)) : hardDefault;
-  const trimmed = String(el?.value ?? '').trim();
-  const raw = trimmed === '' ? NaN : parseInt(trimmed, 10);
-  const n = Number.isFinite(raw) ? raw : fallback;
-  return Math.min(max, Math.max(min, n));
+/** Call before save-settings IPC so unrelated saves do not wipe the active colorbot profile with stale disk snapshot. */
+function mergeColorTriggerbotFormIntoSettings(settings) {
+  try {
+    if (!settings || typeof settings !== 'object') return;
+    readColorTriggerbotFromForm(settings);
+  } catch (_) {}
 }
 
 function readColorTriggerbotFromForm(settings) {
@@ -2940,7 +2942,7 @@ function readColorTriggerbotFromForm(settings) {
   settings.colorTriggerbotSource = src ? src.value : 'preset';
   settings.colorTriggerbotPreset = preset ? preset.value : 'bluegreen';
   settings.colorTriggerbotColor = (color ? color.value : 'FF0000').replace(/^#/, '').toUpperCase();
-  settings.colorTriggerbotTolerance = clampIntFromInput(tol, 0, 255, settings.colorTriggerbotTolerance, 10);
+  settings.colorTriggerbotTolerance = Math.min(255, Math.max(0, parseInt(tol?.value, 10) || 10));
   settings.colorTriggerbotHsvLower = [
     parseInt(h0?.value, 10) || 0,
     parseInt(s0?.value, 10) || 0,
@@ -2951,13 +2953,13 @@ function readColorTriggerbotFromForm(settings) {
     parseInt(s1?.value, 10) || 255,
     parseInt(v1?.value, 10) || 255
   ];
-  settings.colorTriggerbotFov = clampIntFromInput(fov, 20, 400, settings.colorTriggerbotFov, 120);
+  settings.colorTriggerbotFov = Math.min(400, Math.max(20, parseInt(fov?.value, 10) || 120));
   settings.colorTriggerbotCenterOnScreen = !!(centerScreen && centerScreen.checked);
-  settings.colorTriggerbotDistance = clampIntFromInput(dist, 1, 200, settings.colorTriggerbotDistance, 25);
-  settings.colorTriggerbotPollMs = clampIntFromInput(poll, 8, 100, settings.colorTriggerbotPollMs, 16);
-  settings.colorTriggerbotCooldownMs = clampIntFromInput(cd, 0, 5000, settings.colorTriggerbotCooldownMs, 50);
+  settings.colorTriggerbotDistance = Math.min(200, Math.max(1, parseInt(dist?.value, 10) || 25));
+  settings.colorTriggerbotPollMs = Math.min(100, Math.max(8, parseInt(poll?.value, 10) || 16));
+  settings.colorTriggerbotCooldownMs = Math.max(0, parseInt(cd?.value, 10) || 50);
   const clickHold = $('#setting-color-trigger-click-hold');
-  settings.colorTriggerbotClickHoldMs = clampIntFromInput(clickHold, 0, 500, settings.colorTriggerbotClickHoldMs, 50);
+  settings.colorTriggerbotClickHoldMs = Math.max(0, parseInt(clickHold?.value, 10) ?? 50);
   const mode = clickMode ? clickMode.value : 'single';
   settings.colorTriggerbotClickMode = ['single', 'rapid', 'edge'].includes(mode) ? mode : 'single';
   settings.colorTriggerbotAimbotEnabled = !!(aimbot && aimbot.checked);
@@ -2966,8 +2968,8 @@ function readColorTriggerbotFromForm(settings) {
   settings.colorTriggerbotAimOffsetX = Math.round(parseFloat(aimOx?.value) || 0);
   settings.colorTriggerbotAimOffsetY = Math.round(parseFloat(aimOy?.value) || 0);
   settings.colorTriggerbotPredictionEnabled = !!(prediction && prediction.checked);
-  settings.colorTriggerbotPredictionLeadMs = clampIntFromInput(predLead, 0, 200, settings.colorTriggerbotPredictionLeadMs, 50);
-  settings.colorTriggerbotPredictionMaxLeadPx = clampIntFromInput(predMax, 0, 200, settings.colorTriggerbotPredictionMaxLeadPx, 80);
+  settings.colorTriggerbotPredictionLeadMs = Math.max(0, Math.min(200, parseInt(predLead?.value, 10) || 50));
+  settings.colorTriggerbotPredictionMaxLeadPx = Math.max(0, Math.min(200, parseInt(predMax?.value, 10) || 80));
   settings.colorTriggerbotAction = act ? act.value : 'leftClick';
   settings.colorTriggerbotHoldWhileOnTarget = !!(hold && hold.checked);
   settings.colorTriggerbotDebug = !!(dbg && dbg.checked);
@@ -3108,6 +3110,7 @@ function wireSettingsControls() {
       try {
         const settings = await window.kyrun.getSettings();
         settings[key] = el.checked;
+        mergeColorTriggerbotFormIntoSettings(settings);
         await window.kyrun.saveSettings(settings);
         if (key === 'streamerMode') {
           state.streamerMode = el.checked;
@@ -3227,6 +3230,7 @@ function wireSettingsControls() {
       settings.profileTtsSuppressPrivacy = !!(ptsp && ptsp.checked);
       settings.hotkeysTtsEnabled = !!(hkte && hkte.checked);
       settings.colorbotTtsEnabled = !!(cbte && cbte.checked);
+      mergeColorTriggerbotFormIntoSettings(settings);
       await window.kyrun.saveSettings(settings);
       syncProfileTtsSettingsUi();
     } catch {}
@@ -3331,6 +3335,7 @@ function wireSettingsControls() {
           settings.triggersToggleBindKey = name;
           settings.triggersToggleBindVk = e.keyCode;
           settings.triggersToggleBindIsMouse = false;
+          mergeColorTriggerbotFormIntoSettings(settings);
           await window.kyrun.saveSettings(settings);
           showToast('Toggle shortcut saved', 'success');
         } catch {}
@@ -3348,6 +3353,7 @@ function wireSettingsControls() {
           settings.triggersToggleBindKey = name;
           settings.triggersToggleBindVk = vkCodes[e.button] || e.button;
           settings.triggersToggleBindIsMouse = true;
+          mergeColorTriggerbotFormIntoSettings(settings);
           await window.kyrun.saveSettings(settings);
           showToast('Toggle shortcut saved', 'success');
         } catch {}
@@ -3367,6 +3373,7 @@ function wireSettingsControls() {
         settings.triggersToggleBindKey = '';
         settings.triggersToggleBindVk = 0;
         settings.triggersToggleBindIsMouse = false;
+        mergeColorTriggerbotFormIntoSettings(settings);
         await window.kyrun.saveSettings(settings);
         ttBind.value = '';
         showToast('Toggle shortcut cleared', 'info');
@@ -3380,6 +3387,7 @@ function wireSettingsControls() {
       try {
         const settings = await window.kyrun.getSettings();
         settings.defaultDelay = Math.max(1, parseInt(dd.value, 10) || 50);
+        mergeColorTriggerbotFormIntoSettings(settings);
         await window.kyrun.saveSettings(settings);
       } catch {}
     });
@@ -3390,6 +3398,7 @@ function wireSettingsControls() {
       try {
         const settings = await window.kyrun.getSettings();
         settings.coordinateMode = cm.value;
+        mergeColorTriggerbotFormIntoSettings(settings);
         await window.kyrun.saveSettings(settings);
       } catch {}
     });
@@ -3477,7 +3486,6 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
     state.isAnonymous = await window.kyrun.getAnonymousStatus();
     const settings = await window.kyrun.getSettings();
     state.streamerMode = !!settings.streamerMode;
-    loadColorTriggerbotToForm(settings);
   } catch {}
   wireSettingsControls();
   updateStatusBar();
