@@ -434,7 +434,7 @@
             <div class="settings-view__row">
               <div>
                 <div class="settings-view__row-label">Color source</div>
-                <div class="settings-view__row-desc">Preset uses RivalsX-style HSV bands; custom modes use RGB tolerance or manual HSV bounds.</div>
+                <div class="settings-view__row-desc">Preset uses fixed HSV bands you can loosen with tolerance. Custom RGB uses a target color + tolerance; custom HSV uses min/max only.</div>
               </div>
               <select class="properties-panel__input" id="setting-color-trigger-source" style="width:180px">
                 <option value="preset">Preset (HSV)</option>
@@ -453,6 +453,13 @@
                 <option value="pink">Pink</option>
               </select>
             </div>
+            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-tolerance-row">
+              <div>
+                <div class="settings-view__row-label">Tolerance</div>
+                <div class="settings-view__row-desc">Preset: widens H/S/V bands (0 = strict preset only). Custom RGB: max distance per channel to target color.</div>
+              </div>
+              <input type="number" class="properties-panel__input" id="setting-color-trigger-tolerance" style="width:80px" min="0" max="255" title="Tolerance" value="10">
+            </div>
             <div class="settings-view__row color-triggerbot-panel" id="color-trigger-rgb-panel" hidden>
               <div>
                 <div class="settings-view__row-label">Target color</div>
@@ -460,7 +467,6 @@
               </div>
               <div class="color-triggerbot-rgb-row">
                 <input type="text" class="properties-panel__input" id="setting-color-trigger-color" style="width:90px" maxlength="6" placeholder="FF0000">
-                <input type="number" class="properties-panel__input" id="setting-color-trigger-tolerance" style="width:64px" min="0" max="255" title="Tolerance">
                 <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-rgb">Pick (cursor)</button>
                 <button type="button" class="btn btn--secondary" id="btn-color-trigger-pick-rgb-shot">Pick (screenshot)</button>
               </div>

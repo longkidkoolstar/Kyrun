@@ -277,13 +277,33 @@ function normalizeHsvBound(arr, fallback) {
   });
 }
 
+/** Widens preset OpenCV HSV box: higher tolerance = looser match (0 = exact preset only). */
+function expandPresetHsvBounds(lower, upper, toleranceRaw) {
+  const raw = Number(toleranceRaw);
+  const tol = Number.isFinite(raw) ? Math.min(255, Math.max(0, Math.round(raw))) : 10;
+  const lo = normalizeHsvBound(lower, [0, 0, 0]);
+  const hi = normalizeHsvBound(upper, [179, 255, 255]);
+  if (tol <= 0) {
+    return { lower: lo, upper: hi };
+  }
+  const hPad = Math.min(44, Math.round((tol / 255) * 44));
+  const svPad = Math.min(100, Math.round((tol / 255) * 100));
+  lo[0] = Math.max(0, lo[0] - hPad);
+  hi[0] = Math.min(179, hi[0] + hPad);
+  lo[1] = Math.max(0, lo[1] - svPad);
+  hi[1] = Math.min(255, hi[1] + svPad);
+  lo[2] = Math.max(0, lo[2] - svPad);
+  hi[2] = Math.min(255, hi[2] + svPad);
+  return { lower: lo, upper: hi };
+}
+
 function buildColorTriggerbotMatcher(settings) {
   const source = settings.colorTriggerbotSource || 'preset';
   if (source === 'preset') {
     const key = String(settings.colorTriggerbotPreset || 'bluegreen').toLowerCase();
     const preset = COLOR_TRIGGERBOT_PRESETS[key] || COLOR_TRIGGERBOT_PRESETS.bluegreen;
-    const lower = preset.lower;
-    const upper = preset.upper;
+    const tolerance = settings.colorTriggerbotTolerance ?? 10;
+    const { lower, upper } = expandPresetHsvBounds(preset.lower, preset.upper, tolerance);
     return (r, g, b) => {
       const { h, s, v } = rgbToHsv(r, g, b);
       return hsvInRange(h, s, v, lower, upper);
@@ -534,6 +554,12 @@ function probeColorTriggerbot(settings) {
   }
   if (source === 'preset') {
     extra.preset = settings.colorTriggerbotPreset || 'bluegreen';
+    extra.tolerance = settings.colorTriggerbotTolerance ?? 10;
+    const key = String(extra.preset).toLowerCase();
+    const preset = COLOR_TRIGGERBOT_PRESETS[key] || COLOR_TRIGGERBOT_PRESETS.bluegreen;
+    const bounds = expandPresetHsvBounds(preset.lower, preset.upper, extra.tolerance);
+    extra.hsvLower = bounds.lower;
+    extra.hsvUpper = bounds.upper;
   }
   return {
     ok: true,

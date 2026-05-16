@@ -2297,9 +2297,11 @@ function syncColorTriggerbotPanels() {
   const preset = $('#color-trigger-preset-panel');
   const rgb = $('#color-trigger-rgb-panel');
   const hsv = $('#color-trigger-hsv-panel');
+  const tolRow = $('#color-trigger-tolerance-row');
   if (preset) preset.hidden = source !== 'preset';
   if (rgb) rgb.hidden = source !== 'customRgb';
   if (hsv) hsv.hidden = source !== 'customHsv';
+  if (tolRow) tolRow.hidden = source !== 'preset' && source !== 'customRgb';
   const holdOn = !!($('#setting-color-trigger-hold')?.checked);
   const clickPanel = $('#color-trigger-click-panel');
   if (clickPanel) clickPanel.hidden = holdOn;
@@ -2371,12 +2373,18 @@ function formatColorTriggerDebug(data) {
   if (data.holdReleased) lines.push('Hold: released');
   if (data.fallbackCenterHex) lines.push(`GetPixel fallback center: #${data.fallbackCenterHex}`);
   if (data.source) lines.push(`Color source: ${data.source}`);
-  if (data.preset) lines.push(`Preset: ${data.preset}`);
+  if (data.preset) {
+    lines.push(`Preset: ${data.preset}${data.tolerance != null ? ` tolerance=${data.tolerance}` : ''}`);
+  }
   if (data.targetColor != null) {
     lines.push(`Target RGB: #${data.targetColor} tol=${data.tolerance} valid=${data.targetColorValid !== false}`);
   }
-  if (data.hsvLower) lines.push(`HSV lower: ${data.hsvLower.join(',')}`);
-  if (data.hsvUpper) lines.push(`HSV upper: ${data.hsvUpper.join(',')}`);
+  if (data.hsvLower) {
+    lines.push((data.preset ? 'Effective preset HSV min' : 'HSV lower') + `: ${data.hsvLower.join(',')}`);
+  }
+  if (data.hsvUpper) {
+    lines.push((data.preset ? 'Effective preset HSV max' : 'HSV upper') + `: ${data.hsvUpper.join(',')}`);
+  }
   return lines.join('\n') || JSON.stringify(data, null, 2);
 }
 
