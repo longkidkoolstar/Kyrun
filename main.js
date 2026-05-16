@@ -23,10 +23,86 @@ let registeredHotkeys = new Map();
 let macroRunning = false;
 let macroAbort = false;
 let mouseTriggerInterval = null; // polling for mouse button triggers
-let mouseTriggerBindings = new Map(); // vkCode → macroId
+/** Map of vkCode -> { macroIds: Set<string>, isColorbotToggle: boolean, isTriggersToggle: boolean } */
+const globalMouseActions = new Map();
+/** Map of accelerator -> { macroIds: Set<string>, isColorbotToggle: boolean, isTriggersToggle: boolean } */
+const globalHotkeyActions = new Map();
+
 /** Special macroId: fires even when macro triggers are disarmed (toggles armed state). */
 const TOGGLE_TRIGGERS_ID = '!kyrun:toggle-triggers';
 const TOGGLE_COLORBOT_ID = '!kyrun:toggle-colorbot';
+
+function getOrCreateInfo(map, key) {
+  let info = map.get(key);
+  if (!info) {
+    info = { macroIds: new Set(), isColorbotToggle: false, isTriggersToggle: false };
+    map.set(key, info);
+  }
+  return info;
+}
+
+function updateGlobalHotkeyRegistration(accel) {
+  try { globalShortcut.unregister(accel); } catch (_) {}
+  const info = globalHotkeyActions.get(accel);
+  if (!info) return;
+  if (!info.isTriggersToggle && !info.isColorbotToggle && info.macroIds.size === 0) {
+    globalHotkeyActions.delete(accel);
+    return;
+  }
+
+  try {
+    globalShortcut.register(accel, () => {
+      // Priority 1: Triggers Toggle (always works)
+      if (info.isTriggersToggle) {
+        macroTriggersArmed = !macroTriggersArmed;
+        sendMacroTriggersState();
+        return;
+      }
+
+      // Priority 2: Macro Hotkeys (if armed)
+      if (macroTriggersEffectivelyArmed() && info.macroIds.size > 0) {
+        if (mainWindow) {
+          for (const mid of info.macroIds) {
+            mainWindow.webContents.send('hotkey-triggered', mid);
+          }
+        }
+        return; // PREVENT colorbot toggle if macro triggered
+      }
+
+      // Priority 3: Colorbot Toggle
+      if (info.isColorbotToggle) {
+        toggleColorTriggerbot();
+      }
+    });
+  } catch (_) {}
+}
+
+function handleMouseTriggerAction(vkCode) {
+  const info = globalMouseActions.get(vkCode);
+  if (!info) return;
+
+  // Priority 1: Triggers Toggle
+  if (info.isTriggersToggle) {
+    macroTriggersArmed = !macroTriggersArmed;
+    sendMacroTriggersState();
+    return;
+  }
+
+  // Priority 2: Macro Hotkeys (if armed)
+  if (macroTriggersEffectivelyArmed() && info.macroIds.size > 0) {
+    if (mainWindow) {
+      for (const mid of info.macroIds) {
+        mainWindow.webContents.send('hotkey-triggered', mid);
+      }
+    }
+    return; // PREVENT colorbot toggle if macro triggered
+  }
+
+  // Priority 3: Colorbot Toggle
+  if (info.isColorbotToggle) {
+    toggleColorTriggerbot();
+  }
+}
 let triggersToggleAccelRegistered = null;
 let triggersToggleMouseVk = null;
 let colorbotToggleAccelRegistered = null;
@@ -1149,34 +1225,41 @@ function keyNameToElectronAccelerator(keyname) {
 
 function unregisterTriggersToggleBind() {
   if (triggersToggleAccelRegistered) {
-    try { globalShortcut.unregister(triggersToggleAccelRegistered); } catch (_) {}
+    const info = globalHotkeyActions.get(triggersToggleAccelRegistered);
+    if (info) {
+      info.isTriggersToggle = false;
+      updateGlobalHotkeyRegistration(triggersToggleAccelRegistered);
+    }
     triggersToggleAccelRegistered = null;
   }
   if (triggersToggleMouseVk != null) {
-    mouseTriggerBindings.delete(triggersToggleMouseVk);
+    const info = globalMouseActions.get(triggersToggleMouseVk);
+    if (info) {
+      info.isTriggersToggle = false;
+      if (!info.isColorbotToggle && info.macroIds.size === 0) globalMouseActions.delete(triggersToggleMouseVk);
+    }
     triggersToggleMouseVk = null;
-    if (mouseTriggerBindings.size === 0) stopMouseTriggerPolling();
+    if (globalMouseActions.size === 0) stopMouseTriggerPolling();
   }
-}
-
-function isReservedMouseToggleVk(vk) {
-  return vk === triggersToggleMouseVk || vk === colorbotToggleMouseVk;
-}
-
-function reapplyGlobalToggleBinds() {
-  applyTriggersToggleBind(appSettings);
-  applyColorbotToggleBind(appSettings);
 }
 
 function unregisterColorbotToggleBind() {
   if (colorbotToggleAccelRegistered) {
-    try { globalShortcut.unregister(colorbotToggleAccelRegistered); } catch (_) {}
+    const info = globalHotkeyActions.get(colorbotToggleAccelRegistered);
+    if (info) {
+      info.isColorbotToggle = false;
+      updateGlobalHotkeyRegistration(colorbotToggleAccelRegistered);
+    }
     colorbotToggleAccelRegistered = null;
   }
   if (colorbotToggleMouseVk != null) {
-    mouseTriggerBindings.delete(colorbotToggleMouseVk);
+    const info = globalMouseActions.get(colorbotToggleMouseVk);
+    if (info) {
+      info.isColorbotToggle = false;
+      if (!info.isTriggersToggle && info.macroIds.size === 0) globalMouseActions.delete(colorbotToggleMouseVk);
+    }
     colorbotToggleMouseVk = null;
-    if (mouseTriggerBindings.size === 0) stopMouseTriggerPolling();
+    if (globalMouseActions.size === 0) stopMouseTriggerPolling();
   }
 }
 
@@ -1188,20 +1271,18 @@ function applyColorbotToggleBind(settings) {
   const keyName = settings.colorTriggerbotToggleBindKey || '';
   if (isMouse) {
     if (!input || !vk) return;
-    mouseTriggerBindings.set(vk, TOGGLE_COLORBOT_ID);
+    const info = getOrCreateInfo(globalMouseActions, vk);
+    info.isColorbotToggle = true;
     colorbotToggleMouseVk = vk;
     startMouseTriggerPolling();
     return;
   }
   const accel = keyNameToElectronAccelerator(keyName);
   if (!accel) return;
-  try {
-    const ok = globalShortcut.register(accel, () => toggleColorTriggerbot());
-    if (ok) colorbotToggleAccelRegistered = accel;
-    else colorbotToggleAccelRegistered = null;
-  } catch (_) {
-    colorbotToggleAccelRegistered = null;
-  }
+  const info = getOrCreateInfo(globalHotkeyActions, accel);
+  info.isColorbotToggle = true;
+  colorbotToggleAccelRegistered = accel;
+  updateGlobalHotkeyRegistration(accel);
 }
 
 function applyTriggersToggleBind(settings) {
@@ -1212,22 +1293,18 @@ function applyTriggersToggleBind(settings) {
   const keyName = settings.triggersToggleBindKey || '';
   if (isMouse) {
     if (!input || !vk) return;
-    mouseTriggerBindings.set(vk, TOGGLE_TRIGGERS_ID);
+    const info = getOrCreateInfo(globalMouseActions, vk);
+    info.isTriggersToggle = true;
     triggersToggleMouseVk = vk;
     startMouseTriggerPolling();
     return;
   }
   const accel = keyNameToElectronAccelerator(keyName);
   if (!accel) return;
-  try {
-    globalShortcut.register(accel, () => {
-      macroTriggersArmed = !macroTriggersArmed;
-      sendMacroTriggersState();
-    });
-    triggersToggleAccelRegistered = accel;
-  } catch (_) {
-    triggersToggleAccelRegistered = null;
-  }
+  const info = getOrCreateInfo(globalHotkeyActions, accel);
+  info.isTriggersToggle = true;
+  triggersToggleAccelRegistered = accel;
+  updateGlobalHotkeyRegistration(accel);
 }
 
 function saveSettings(settings) {
@@ -1658,14 +1735,17 @@ function setupIPC() {
   ipcMain.handle('register-hotkey', (_, id, accelerator) => {
     try {
       if (registeredHotkeys.has(id)) {
-        globalShortcut.unregister(registeredHotkeys.get(id));
+        const oldAccel = registeredHotkeys.get(id);
+        const info = globalHotkeyActions.get(oldAccel);
+        if (info) {
+          info.macroIds.delete(id);
+          updateGlobalHotkeyRegistration(oldAccel);
+        }
       }
-      globalShortcut.register(accelerator, () => {
-        if (!macroTriggersEffectivelyArmed()) return;
-        if (mainWindow) mainWindow.webContents.send('hotkey-triggered', id);
-      });
+      const info = getOrCreateInfo(globalHotkeyActions, accelerator);
+      info.macroIds.add(id);
       registeredHotkeys.set(id, accelerator);
-      reapplyGlobalToggleBinds();
+      updateGlobalHotkeyRegistration(accelerator);
       return true;
     } catch {
       return false;
@@ -1674,10 +1754,14 @@ function setupIPC() {
 
   ipcMain.handle('unregister-hotkey', (_, id) => {
     if (registeredHotkeys.has(id)) {
-      globalShortcut.unregister(registeredHotkeys.get(id));
+      const accel = registeredHotkeys.get(id);
+      const info = globalHotkeyActions.get(accel);
+      if (info) {
+        info.macroIds.delete(id);
+        updateGlobalHotkeyRegistration(accel);
+      }
       registeredHotkeys.delete(id);
     }
-    reapplyGlobalToggleBinds();
     return true;
   });
 
@@ -1747,17 +1831,19 @@ function setupIPC() {
   // Electron's globalShortcut doesn't support mouse buttons, so we poll
   ipcMain.handle('register-mouse-trigger', (_, macroId, vkCode) => {
     if (!input) return false;
-    if (isReservedMouseToggleVk(vkCode)) return false;
-    mouseTriggerBindings.set(vkCode, macroId);
+    const info = getOrCreateInfo(globalMouseActions, vkCode);
+    info.macroIds.add(macroId);
     startMouseTriggerPolling();
-    reapplyGlobalToggleBinds();
     return true;
   });
 
   ipcMain.handle('unregister-mouse-trigger', (_, vkCode) => {
-    if (!isReservedMouseToggleVk(vkCode)) mouseTriggerBindings.delete(vkCode);
-    if (mouseTriggerBindings.size === 0) stopMouseTriggerPolling();
-    reapplyGlobalToggleBinds();
+    const info = globalMouseActions.get(vkCode);
+    if (info) {
+      info.macroIds.clear(); 
+      if (!info.isTriggersToggle && !info.isColorbotToggle) globalMouseActions.delete(vkCode);
+    }
+    if (globalMouseActions.size === 0) stopMouseTriggerPolling();
     return true;
   });
 
@@ -2150,19 +2236,11 @@ let mouseButtonStates = new Map();
 function startMouseTriggerPolling() {
   if (mouseTriggerInterval || !input) return;
   mouseTriggerInterval = setInterval(() => {
-    for (const [vkCode, macroId] of mouseTriggerBindings) {
+    for (const vkCode of globalMouseActions.keys()) {
       const pressed = input.isKeyDown(vkCode);
       const wasPressed = mouseButtonStates.get(vkCode) || false;
       if (pressed && !wasPressed) {
-        if (macroId === TOGGLE_TRIGGERS_ID) {
-          macroTriggersArmed = !macroTriggersArmed;
-          sendMacroTriggersState();
-        } else if (macroId === TOGGLE_COLORBOT_ID) {
-          toggleColorTriggerbot();
-        } else {
-          if (!macroTriggersEffectivelyArmed()) continue;
-          if (mainWindow) mainWindow.webContents.send('hotkey-triggered', macroId);
-        }
+        handleMouseTriggerAction(vkCode);
       }
       mouseButtonStates.set(vkCode, pressed);
     }
