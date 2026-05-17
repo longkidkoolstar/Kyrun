@@ -461,8 +461,125 @@ function getColorTriggerbotCaptureRect(fov, centerOnScreen = false) {
   };
 }
 
+function dilateColorTriggerMask(mask, w, h, iterations) {
+  const iters = Math.min(8, Math.max(0, Math.round(Number(iterations) || 0)));
+  if (iters <= 0) return mask;
+  let current = mask;
+  for (let iter = 0; iter < iters; iter++) {
+    const next = new Uint8Array(w * h);
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        if (!current[py * w + px]) continue;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const ny = py + dy;
+            const nx = px + dx;
+            if (ny >= 0 && ny < h && nx >= 0 && nx < w) next[ny * w + nx] = 1;
+          }
+        }
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+/** Largest 8-connected blob; target = topmost row, tie-break X nearest cx. */
+function resolveHeadTargetFromMask(mask, w, h, cx, maxDistance) {
+  const visited = new Uint8Array(w * h);
+  let bestSize = 0;
+  let bestHeadPx = -1;
+  let bestHeadPy = -1;
+  let bestHeadDist = Infinity;
+
+  for (let sy = 0; sy < h; sy++) {
+    for (let sx = 0; sx < w; sx++) {
+      const start = sy * w + sx;
+      if (!mask[start] || visited[start]) continue;
+
+      const stack = [start];
+      visited[start] = 1;
+      let size = 0;
+      let minY = h;
+      const topRow = [];
+
+      while (stack.length) {
+        const idx = stack.pop();
+        size++;
+        const py = (idx / w) | 0;
+        const px = idx % w;
+        if (py < minY) {
+          minY = py;
+          topRow.length = 0;
+          topRow.push(px);
+        } else if (py === minY) {
+          topRow.push(px);
+        }
+        if (py > 0) {
+          const n = idx - w;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+        if (py < h - 1) {
+          const n = idx + w;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+        if (px > 0) {
+          const n = idx - 1;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+        if (px < w - 1) {
+          const n = idx + 1;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+        if (py > 0 && px > 0) {
+          const n = idx - w - 1;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+        if (py > 0 && px < w - 1) {
+          const n = idx - w + 1;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+        if (py < h - 1 && px > 0) {
+          const n = idx + w - 1;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+        if (py < h - 1 && px < w - 1) {
+          const n = idx + w + 1;
+          if (mask[n] && !visited[n]) { visited[n] = 1; stack.push(n); }
+        }
+      }
+
+      if (size <= bestSize || topRow.length === 0) continue;
+      let headPx = topRow[0];
+      for (let i = 1; i < topRow.length; i++) {
+        const px = topRow[i];
+        if (Math.abs(px - cx) < Math.abs(headPx - cx)) headPx = px;
+      }
+      bestSize = size;
+      bestHeadPx = headPx;
+      bestHeadPy = minY;
+    }
+  }
+
+  const cy = (h / 2) | 0;
+  if (bestHeadPx >= 0) {
+    bestHeadDist = Math.sqrt((bestHeadPx - cx) ** 2 + (bestHeadPy - cy) ** 2);
+  }
+  const inRange = bestHeadPx >= 0 && bestHeadDist <= maxDistance;
+  return {
+    targetPx: inRange ? bestHeadPx : -1,
+    targetPy: inRange ? bestHeadPy : -1,
+    wouldTrigger: inRange,
+    blobPixelCount: bestSize,
+    headDist: bestHeadPx >= 0 ? bestHeadDist : -1
+  };
+}
+
 function analyzeColorTriggerCapture(capture, matcher, maxDistance, opts = {}) {
   const stride = opts.fullScan ? 1 : (capture.width > 150 ? 2 : 1);
+  const targetMode = opts.targetMode === 'head' ? 'head' : 'body';
+  const morphEnabled = !!opts.morphEnabled;
+  const morphIterations = Math.min(8, Math.max(0, Math.round(Number(opts.morphIterations) || 0)));
   const { width: w, height: h, data } = capture;
   const cx = Math.floor(w / 2);
   const cy = Math.floor(h / 2);
@@ -481,6 +598,7 @@ function analyzeColorTriggerCapture(capture, matcher, maxDistance, opts = {}) {
   let sumPx = 0;
   let sumPy = 0;
   let inRangeCount = 0;
+  let mask = null;
 
   for (let py = 0; py < h; py += stride) {
     for (let px = 0; px < w; px += stride) {
@@ -489,6 +607,10 @@ function analyzeColorTriggerCapture(capture, matcher, maxDistance, opts = {}) {
       const g = data[i + 1];
       const r = data[i + 2];
       if (!matcher(r, g, b)) continue;
+      if (targetMode === 'head') {
+        if (!mask) mask = new Uint8Array(w * h);
+        mask[py * w + px] = 1;
+      }
       matchCount++;
       const dist = Math.sqrt((px - cx) ** 2 + (py - cy) ** 2);
       if (dist < minDist) {
@@ -496,7 +618,7 @@ function analyzeColorTriggerCapture(capture, matcher, maxDistance, opts = {}) {
         closestPx = px;
         closestPy = py;
       }
-      if (dist <= maxDistance) {
+      if (targetMode === 'body' && dist <= maxDistance) {
         sumPx += px;
         sumPy += py;
         inRangeCount++;
@@ -506,28 +628,53 @@ function analyzeColorTriggerCapture(capture, matcher, maxDistance, opts = {}) {
 
   const hasMatch = minDist !== Infinity;
   const effectiveMinDist = hasMatch ? minDist : -1;
-  const inRange = hasMatch && minDist <= maxDistance;
   let targetPx = -1;
   let targetPy = -1;
-  if (inRange) {
-    if (inRangeCount > 0) {
-      targetPx = Math.round(sumPx / inRangeCount);
-      targetPy = Math.round(sumPy / inRangeCount);
-    } else {
-      targetPx = closestPx;
-      targetPy = closestPy;
+  let wouldTrigger = false;
+  let aimCentroid = false;
+  let blobPixelCount = 0;
+  let headDist = -1;
+
+  if (targetMode === 'head' && mask && hasMatch) {
+    if (morphEnabled && morphIterations > 0) {
+      mask = dilateColorTriggerMask(mask, w, h, morphIterations);
+    }
+    const head = resolveHeadTargetFromMask(mask, w, h, cx, maxDistance);
+    targetPx = head.targetPx;
+    targetPy = head.targetPy;
+    wouldTrigger = head.wouldTrigger;
+    blobPixelCount = head.blobPixelCount;
+    headDist = head.headDist;
+  } else if (targetMode === 'body') {
+    const inRange = hasMatch && minDist <= maxDistance;
+    wouldTrigger = inRange;
+    if (inRange) {
+      if (inRangeCount > 0) {
+        targetPx = Math.round(sumPx / inRangeCount);
+        targetPy = Math.round(sumPy / inRangeCount);
+        aimCentroid = true;
+      } else {
+        targetPx = closestPx;
+        targetPy = closestPy;
+      }
     }
   }
+
   return {
     minDist: effectiveMinDist,
     matchCount,
     centerHex,
     centerMatch,
     centerHsv,
-    wouldTrigger: inRange,
+    wouldTrigger,
     targetPx,
     targetPy,
-    aimCentroid: inRange && inRangeCount > 0
+    aimCentroid,
+    targetMode,
+    morphEnabled: targetMode === 'head' && morphEnabled,
+    morphIterations: targetMode === 'head' && morphEnabled ? morphIterations : 0,
+    blobPixelCount: targetMode === 'head' ? blobPixelCount : undefined,
+    headDist: targetMode === 'head' ? headDist : undefined
   };
 }
 
@@ -638,7 +785,15 @@ function probeColorTriggerbot(settings) {
     };
   }
 
-  const analysis = analyzeColorTriggerCapture(capture, matcher, distance, { fullScan: true });
+  const targetMode = settings.colorTriggerbotTargetMode === 'head' ? 'head' : 'body';
+  const morphEnabled = !!settings.colorTriggerbotMorphEnabled;
+  const morphIterations = Math.min(8, Math.max(0, Math.round(Number(settings.colorTriggerbotMorphIterations) || 3)));
+  const analysis = analyzeColorTriggerCapture(capture, matcher, distance, {
+    fullScan: true,
+    targetMode,
+    morphEnabled,
+    morphIterations
+  });
   const source = settings.colorTriggerbotSource || 'preset';
   const extra = {};
   if (source === 'customRgb') {
@@ -676,6 +831,9 @@ function probeColorTriggerbot(settings) {
     clickMode: settings.colorTriggerbotClickMode || 'single',
     aimbotEnabled: !!settings.colorTriggerbotAimbotEnabled,
     centerOnScreen,
+    targetMode,
+    morphEnabled,
+    morphIterations: morphEnabled ? morphIterations : 0,
     macroRunning: !!macroRunning,
     ...extra,
     ...analysis
@@ -716,7 +874,8 @@ function colorTriggerbotTick() {
   const {
     fov, distance, cooldownMs, clickHoldMs, action, debug, holdWhileOnTarget,
     clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen,
-    predictionEnabled, predictionLeadMs, predictionMaxLeadPx, predictionSmooth
+    predictionEnabled, predictionLeadMs, predictionMaxLeadPx, predictionSmooth,
+    targetMode, morphEnabled, morphIterations
   } = colorTriggerbotRuntime;
   const button = colorTriggerbotActionToButton(action);
   const captureCenterOnScreen = centerOnScreen || aimbotEnabled;
@@ -759,7 +918,11 @@ function colorTriggerbotTick() {
     return;
   }
 
-  const analysis = analyzeColorTriggerCapture(capture, colorTriggerbotMatcher, distance);
+  const analysis = analyzeColorTriggerCapture(capture, colorTriggerbotMatcher, distance, {
+    targetMode,
+    morphEnabled,
+    morphIterations
+  });
   const onTarget = !!analysis.wouldTrigger;
 
   if (!onTarget) {
@@ -884,12 +1047,16 @@ function applyColorTriggerbot(settings, enabled = colorTriggerbotActive) {
   const predictionLeadMs = Math.max(0, Math.min(200, Math.round(Number(settings.colorTriggerbotPredictionLeadMs) || 50)));
   const predictionMaxLeadPx = Math.max(0, Math.min(200, Math.round(Number(settings.colorTriggerbotPredictionMaxLeadPx) || 80)));
   const predictionSmooth = Math.min(0.95, Math.max(0, Number(settings.colorTriggerbotPredictionSmooth) ?? 0.65));
+  const targetMode = settings.colorTriggerbotTargetMode === 'head' ? 'head' : 'body';
+  const morphEnabled = !!settings.colorTriggerbotMorphEnabled;
+  const morphIterations = Math.min(8, Math.max(0, Math.round(Number(settings.colorTriggerbotMorphIterations) || 3)));
 
   colorTriggerbotMatcher = buildColorTriggerbotMatcher(settings);
   colorTriggerbotRuntime = {
     fov, distance, cooldownMs, clickHoldMs, action, debug, holdWhileOnTarget,
     clickMode, aimbotEnabled, aimSpeed, aimMaxStep, aimOffsetX, aimOffsetY, centerOnScreen,
-    predictionEnabled, predictionLeadMs, predictionMaxLeadPx, predictionSmooth
+    predictionEnabled, predictionLeadMs, predictionMaxLeadPx, predictionSmooth,
+    targetMode, morphEnabled, morphIterations
   };
   colorTriggerbotLastClick = 0;
   colorTriggerbotWasOnTarget = false;
@@ -1045,6 +1212,9 @@ const COLOR_TRIGGERBOT_PROFILE_KEYS = [
   'colorTriggerbotHsvUpper',
   'colorTriggerbotFov',
   'colorTriggerbotCenterOnScreen',
+  'colorTriggerbotTargetMode',
+  'colorTriggerbotMorphEnabled',
+  'colorTriggerbotMorphIterations',
   'colorTriggerbotDistance',
   'colorTriggerbotPollMs',
   'colorTriggerbotCooldownMs',
@@ -1169,6 +1339,9 @@ function loadSettings() {
     colorTriggerbotHsvUpper: [90, 100, 255],
     colorTriggerbotFov: 120,
     colorTriggerbotCenterOnScreen: false,
+    colorTriggerbotTargetMode: 'body',
+    colorTriggerbotMorphEnabled: false,
+    colorTriggerbotMorphIterations: 3,
     colorTriggerbotToggleBindEnabled: false,
     colorTriggerbotToggleBindKey: '',
     colorTriggerbotToggleBindVk: 0,

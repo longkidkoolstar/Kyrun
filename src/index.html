@@ -641,15 +641,41 @@
             </div>
             <div class="settings-view__row">
               <div>
-                <div class="settings-view__row-label">FOV size (px)</div>
-                <div class="settings-view__row-desc">Square capture region size; trigger distance is measured from its center.</div>
+                <div class="settings-view__row-label">Target point</div>
+                <div class="settings-view__row-desc">Body uses the centroid of matching pixels. Head uses the top of the largest color blob (better for headshots with aimbot).</div>
+              </div>
+              <select class="properties-panel__input" id="setting-color-trigger-target-mode" style="width:180px">
+                <option value="body">Body (centroid)</option>
+                <option value="head">Head (top of blob)</option>
+              </select>
+            </div>
+            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-morph-panel" hidden>
+              <div>
+                <div class="settings-view__row-label">Merge outline (dilate)</div>
+                <div class="settings-view__row-desc">Fills gaps in fragmented enemy outlines before head detection. Try 3-5 iterations if head mode flickers.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-color-trigger-morph-enabled">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row color-triggerbot-panel" id="color-trigger-morph-iter-row" hidden>
+              <div>
+                <div class="settings-view__row-label">Dilate iterations</div>
+              </div>
+              <input type="number" class="properties-panel__input" id="setting-color-trigger-morph-iterations" style="width:80px" min="0" max="8" value="3">
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Capture FOV (px)</div>
+                <div class="settings-view__row-desc">Screenshot square size. Use a larger value to see more of the enemy; pair with a smaller trigger radius below.</div>
               </div>
               <input type="number" class="properties-panel__input" id="setting-color-trigger-fov" style="width:80px" min="20" max="400">
             </div>
             <div class="settings-view__row">
               <div>
-                <div class="settings-view__row-label">Trigger distance (px)</div>
-                <div class="settings-view__row-desc">Max distance from center to matching pixel to fire click.</div>
+                <div class="settings-view__row-label">Trigger / aim radius (px)</div>
+                <div class="settings-view__row-desc">Inner gate from capture center: aim and click only when the target point is within this radius (max half of capture FOV).</div>
               </div>
               <input type="number" class="properties-panel__input" id="setting-color-trigger-distance" style="width:80px" min="1" max="200">
             </div>

@@ -2312,6 +2312,12 @@ function syncColorTriggerbotPanels() {
   const predOn = !!($('#setting-color-trigger-prediction')?.checked);
   const predPanel = $('#color-trigger-prediction-panel');
   if (predPanel) predPanel.hidden = !aimbotOn || !predOn;
+  const targetMode = $('#setting-color-trigger-target-mode')?.value || 'body';
+  const headMode = targetMode === 'head';
+  const morphPanel = $('#color-trigger-morph-panel');
+  const morphIterRow = $('#color-trigger-morph-iter-row');
+  if (morphPanel) morphPanel.hidden = !headMode;
+  if (morphIterRow) morphIterRow.hidden = !headMode || !$('#setting-color-trigger-morph-enabled')?.checked;
   syncColorTriggerDebugPanel();
   syncColorTriggerbotToggleBindUi();
 }
@@ -2346,6 +2352,10 @@ function formatColorTriggerDebug(data) {
     const hsvTxt = hsv ? ` HSV ${hsv.h},${hsv.s},${hsv.v}` : '';
     lines.push(`Center pixel: #${data.centerHex}${hsvTxt} match=${!!data.centerMatch}`);
   }
+  if (data.targetMode) lines.push(`Target mode: ${data.targetMode}`);
+  if (data.morphEnabled) lines.push(`Morph dilate: on (${data.morphIterations ?? 0} iter)`);
+  if (data.blobPixelCount != null && data.blobPixelCount > 0) lines.push(`Largest blob pixels: ${data.blobPixelCount}`);
+  if (data.headDist != null && data.headDist >= 0) lines.push(`Head distance from center: ${data.headDist.toFixed(1)}px`);
   if (data.matchCount != null) lines.push(`Matching pixels: ${data.matchCount}`);
   if (data.minDist != null && data.minDist >= 0) lines.push(`Closest match: ${data.minDist.toFixed(1)}px`);
   else if (data.minDist === -1) lines.push('Closest match: none');
@@ -2360,6 +2370,7 @@ function formatColorTriggerDebug(data) {
   if (data.aimDelta) lines.push(`Aim delta: ${data.aimDelta.x},${data.aimDelta.y}`);
   if (data.aimTarget) lines.push(`Aim toward: ${data.aimTarget.x},${data.aimTarget.y}`);
   if (data.aimPredicted) lines.push('Aim: using movement prediction');
+  if (data.targetPx != null && data.targetPx >= 0) lines.push(`Target point: ${data.targetPx},${data.targetPy}`);
   if (data.aimRawPx != null) lines.push(`Aim raw centroid: ${data.aimRawPx},${data.aimRawPy}`);
   if (data.aimPredPx != null) lines.push(`Aim predicted: ${data.aimPredPx},${data.aimPredPy}`);
   if (data.aimVelocity) {
@@ -2561,6 +2572,9 @@ const COLOR_TRIGGERBOT_PROFILE_KEYS = [
   'colorTriggerbotHsvUpper',
   'colorTriggerbotFov',
   'colorTriggerbotCenterOnScreen',
+  'colorTriggerbotTargetMode',
+  'colorTriggerbotMorphEnabled',
+  'colorTriggerbotMorphIterations',
   'colorTriggerbotDistance',
   'colorTriggerbotPollMs',
   'colorTriggerbotCooldownMs',
@@ -2848,6 +2862,9 @@ function loadColorTriggerbotToForm(s) {
   const cth1 = $('#setting-color-trigger-h1');
   const cts1 = $('#setting-color-trigger-s1');
   const ctv1 = $('#setting-color-trigger-v1');
+  const cttm = $('#setting-color-trigger-target-mode');
+  const ctmorph = $('#setting-color-trigger-morph-enabled');
+  const ctmorphIter = $('#setting-color-trigger-morph-iterations');
   const ctf = $('#setting-color-trigger-fov');
   const ctcs = $('#setting-color-trigger-center-screen');
   const ctd = $('#setting-color-trigger-distance');
@@ -2918,6 +2935,9 @@ function loadColorTriggerbotToForm(s) {
   if (cth1) cth1.value = hi[0];
   if (cts1) cts1.value = hi[1];
   if (ctv1) ctv1.value = hi[2];
+  if (cttm) cttm.value = s.colorTriggerbotTargetMode === 'head' ? 'head' : 'body';
+  if (ctmorph) ctmorph.checked = !!s.colorTriggerbotMorphEnabled;
+  if (ctmorphIter) ctmorphIter.value = s.colorTriggerbotMorphIterations != null ? s.colorTriggerbotMorphIterations : 3;
   if (ctf) ctf.value = s.colorTriggerbotFov != null ? s.colorTriggerbotFov : 120;
   if (ctcs) ctcs.checked = !!s.colorTriggerbotCenterOnScreen;
   if (ctd) ctd.value = s.colorTriggerbotDistance != null ? s.colorTriggerbotDistance : 25;
@@ -3052,6 +3072,9 @@ function readColorTriggerbotFromForm(settings) {
   const h1 = $('#setting-color-trigger-h1');
   const s1 = $('#setting-color-trigger-s1');
   const v1 = $('#setting-color-trigger-v1');
+  const targetModeEl = $('#setting-color-trigger-target-mode');
+  const morphEnabled = $('#setting-color-trigger-morph-enabled');
+  const morphIter = $('#setting-color-trigger-morph-iterations');
   const fov = $('#setting-color-trigger-fov');
   const centerScreen = $('#setting-color-trigger-center-screen');
   const dist = $('#setting-color-trigger-distance');
@@ -3110,9 +3133,16 @@ function readColorTriggerbotFromForm(settings) {
     parseInt(s1?.value, 10) || 255,
     parseInt(v1?.value, 10) || 255
   ];
+  settings.colorTriggerbotTargetMode = targetModeEl?.value === 'head' ? 'head' : 'body';
+  settings.colorTriggerbotMorphEnabled = !!(morphEnabled && morphEnabled.checked);
+  settings.colorTriggerbotMorphIterations = Math.min(8, Math.max(0, parseInt(morphIter?.value, 10) ?? 3));
   settings.colorTriggerbotFov = Math.min(400, Math.max(20, parseInt(fov?.value, 10) || 120));
   settings.colorTriggerbotCenterOnScreen = !!(centerScreen && centerScreen.checked);
-  settings.colorTriggerbotDistance = Math.min(200, Math.max(1, parseInt(dist?.value, 10) || 25));
+  const fovVal = settings.colorTriggerbotFov;
+  settings.colorTriggerbotDistance = Math.min(
+    Math.floor(fovVal / 2),
+    Math.max(1, parseInt(dist?.value, 10) || 25)
+  );
   settings.colorTriggerbotPollMs = Math.min(100, Math.max(8, parseInt(poll?.value, 10) || 16));
   settings.colorTriggerbotCooldownMs = Math.max(0, parseInt(cd?.value, 10) || 50);
   const clickHold = $('#setting-color-trigger-click-hold');
@@ -3291,7 +3321,8 @@ function wireSettingsControls() {
     '#setting-color-trigger-prediction',
     '#setting-color-trigger-center-screen',
     '#setting-color-trigger-toggle-enabled',
-    '#setting-color-trigger-link-profile'
+    '#setting-color-trigger-link-profile',
+    '#setting-color-trigger-morph-enabled'
   ];
   colorTriggerToggles.forEach(sel => {
     const el = $(sel);
@@ -3330,6 +3361,14 @@ function wireSettingsControls() {
       await saveColorTriggerbotSettings({ toast: false });
     });
   }
+
+  const cttm = $('#setting-color-trigger-target-mode');
+  if (cttm) {
+    cttm.addEventListener('change', () => {
+      syncColorTriggerbotPanels();
+      void saveColorTriggerbotSettings({ toast: false });
+    });
+  }
   
   // Presets (Multiple)
   document.querySelectorAll('.setting-color-trigger-preset-check').forEach(cb => {
@@ -3341,6 +3380,7 @@ function wireSettingsControls() {
     '#setting-color-trigger-h0', '#setting-color-trigger-s0', '#setting-color-trigger-v0',
     '#setting-color-trigger-h1', '#setting-color-trigger-s1', '#setting-color-trigger-v1',
     '#setting-color-trigger-fov', '#setting-color-trigger-distance',
+    '#setting-color-trigger-morph-iterations',
     '#setting-color-trigger-poll', '#setting-color-trigger-cooldown', '#setting-color-trigger-click-hold',
     '#setting-color-trigger-aim-speed', '#setting-color-trigger-aim-max-step',
     '#setting-color-trigger-aim-offset-x', '#setting-color-trigger-aim-offset-y',
