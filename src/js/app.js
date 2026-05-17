@@ -1797,6 +1797,7 @@ try {
   window.kyrun.onProfileChanged(name => {
     state.currentProfile = name;
     loadProfiles(); loadFileTree(); reloadProfileTriggers(); updateStatusBar();
+    loadSettingsToForm();
     if (suppressNextProfileChangedTts) {
       suppressNextProfileChangedTts = false;
       return;
@@ -2867,7 +2868,13 @@ function loadColorTriggerbotToForm(s) {
   const cthold = $('#setting-color-trigger-hold');
   const cttoe = $('#setting-color-trigger-toggle-enabled');
   const cttob = $('#setting-color-trigger-toggle-bind');
+  const linkCb = $('#setting-color-trigger-link-profile');
   if (cts) cts.value = s.colorTriggerbotSource || 'preset';
+
+  if (linkCb) {
+    const links = s.colorTriggerbotProfileLinks || {};
+    linkCb.checked = links[state.currentProfile] === s.colorTriggerbotActiveProfile;
+  }
 
   // Presets (Multiple)
   let presets = s.colorTriggerbotPreset || ['bluegreen'];
@@ -3063,10 +3070,22 @@ function readColorTriggerbotFromForm(settings) {
   const hold = $('#setting-color-trigger-hold');
   const dbg = $('#setting-color-trigger-debug');
   const toggleEn = $('#setting-color-trigger-toggle-enabled');
+  const linkCb = $('#setting-color-trigger-link-profile');
 
   settings.colorTriggerbotEnabled = !!(en && en.checked);
   settings.colorTriggerbotToggleBindEnabled = !!(toggleEn && toggleEn.checked);
   settings.colorTriggerbotSource = src ? src.value : 'preset';
+
+  if (linkCb) {
+    settings.colorTriggerbotProfileLinks = settings.colorTriggerbotProfileLinks || {};
+    if (linkCb.checked) {
+      settings.colorTriggerbotProfileLinks[state.currentProfile] = settings.colorTriggerbotActiveProfile;
+    } else {
+      if (settings.colorTriggerbotProfileLinks[state.currentProfile] === settings.colorTriggerbotActiveProfile) {
+        delete settings.colorTriggerbotProfileLinks[state.currentProfile];
+      }
+    }
+  }
 
   // Presets (Multiple)
   const selectedPresets = Array.from(document.querySelectorAll('.setting-color-trigger-preset-check'))
@@ -3271,7 +3290,8 @@ function wireSettingsControls() {
     '#setting-color-trigger-aimbot',
     '#setting-color-trigger-prediction',
     '#setting-color-trigger-center-screen',
-    '#setting-color-trigger-toggle-enabled'
+    '#setting-color-trigger-toggle-enabled',
+    '#setting-color-trigger-link-profile'
   ];
   colorTriggerToggles.forEach(sel => {
     const el = $(sel);

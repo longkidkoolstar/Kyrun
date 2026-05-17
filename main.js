@@ -1439,6 +1439,24 @@ function switchProfile(profileName) {
     setTrayTooltip();
     updateTrayMenu();
   }
+  
+  // Handle colorbot profile linking
+  if (appSettings) {
+    const links = appSettings.colorTriggerbotProfileLinks || {};
+    const linkedCbProfile = links[profileName];
+    if (linkedCbProfile && appSettings.colorTriggerbotProfiles && appSettings.colorTriggerbotProfiles[linkedCbProfile]) {
+      if (appSettings.colorTriggerbotActiveProfile !== linkedCbProfile) {
+        persistActiveColorTriggerbotProfile(appSettings);
+        appSettings.colorTriggerbotActiveProfile = linkedCbProfile;
+        applyColorTriggerbotProfileToSettings(appSettings, linkedCbProfile);
+        saveSettings(appSettings);
+        if (colorTriggerbotActive) {
+          applyColorTriggerbot(appSettings, true);
+        }
+      }
+    }
+  }
+
   if (mainWindow) {
     mainWindow.webContents.send('profile-changed', profileName);
   }
