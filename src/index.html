@@ -386,6 +386,45 @@
             </div>
           </div>
 
+          <div class="settings-view__group" id="auto-walk-settings">
+            <div class="settings-view__group-title">Auto Walk</div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Enable auto walk</div>
+                <div class="settings-view__row-desc">Assign a global bind that toggles holding the walk key. Press it once to start walking, press again to stop. Works even when Kyrun is minimized.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="setting-auto-walk-enabled">
+                <span class="toggle-switch__slider"></span>
+              </label>
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Toggle bind</div>
+                <div class="settings-view__row-desc">Click the field, then press a key or a mouse button (middle, right, or side). Right-click the field to clear.</div>
+              </div>
+              <input type="text" class="properties-panel__input" style="width:160px;cursor:pointer;" id="setting-auto-walk-bind" readonly placeholder="Not set" title="Click to bind · Right-click to clear">
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Walk key</div>
+                <div class="settings-view__row-desc">The key to hold down when auto walk is active. Default is W (forward). Change to match your game's movement key.</div>
+              </div>
+              <input type="text" class="properties-panel__input" style="width:160px;cursor:pointer;" id="setting-auto-walk-key" readonly placeholder="W (default)" title="Click to set walk key · Right-click to reset to W">
+            </div>
+            <div class="settings-view__row">
+              <div>
+                <div class="settings-view__row-label">Status</div>
+                <div class="settings-view__row-desc">Current auto walk state.</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="titlebar__status-dot titlebar__status-dot--inactive" id="auto-walk-status-dot"></span>
+                <span id="auto-walk-status-text" style="font-size:12px;color:var(--text-secondary);">Stopped</span>
+                <button type="button" class="btn btn--secondary" id="btn-auto-walk-toggle" style="padding:4px 12px;font-size:12px;">Start</button>
+              </div>
+            </div>
+          </div>
+
           <div class="settings-view__group" id="color-triggerbot-settings">
             <div class="settings-view__group-title">Color triggerbot</div>
             <div class="settings-view__row color-triggerbot-profile-row">

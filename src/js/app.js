@@ -3352,6 +3352,13 @@ async function loadSettingsToForm() {
     if (ptsp) ptsp.checked = !!s.profileTtsSuppressPrivacy;
     if (hkte) hkte.checked = s.hotkeysTtsEnabled !== false;
     if (cbte) cbte.checked = s.colorbotTtsEnabled !== false;
+    // Auto Walk
+    const awe = $('#setting-auto-walk-enabled');
+    const awb = $('#setting-auto-walk-bind');
+    const awk = $('#setting-auto-walk-key');
+    if (awe) awe.checked = !!s.autoWalkBindEnabled;
+    if (awb) awb.value = s.autoWalkBindKey || '';
+    if (awk) awk.value = s.autoWalkKeyName || 'W';
     const cte = $('#setting-color-trigger-enabled');
     if (cte) cte.checked = false;
     loadColorTriggerbotToForm(s);
@@ -3363,6 +3370,152 @@ async function loadSettingsToForm() {
 }
 
 function wireSettingsControls() {
+  // ── Auto Walk UI helpers ──
+  function updateAutoWalkStatusUi(active) {
+    const dot = $('#auto-walk-status-dot');
+    const text = $('#auto-walk-status-text');
+    const btn = $('#btn-auto-walk-toggle');
+    if (dot) dot.className = active
+      ? 'titlebar__status-dot titlebar__status-dot--active'
+      : 'titlebar__status-dot titlebar__status-dot--inactive';
+    if (text) text.textContent = active ? 'Walking' : 'Stopped';
+    if (btn) btn.textContent = active ? 'Stop' : 'Start';
+  }
+
+  // Subscribe to auto walk state events
+  if (window.kyrun.onAutoWalkState) {
+    window.kyrun.onAutoWalkState(data => updateAutoWalkStatusUi(!!(data && data.active)));
+  }
+
+  // Auto Walk enable toggle
+  const awe = $('#setting-auto-walk-enabled');
+  if (awe) {
+    awe.addEventListener('change', async () => {
+      try {
+        const settings = await window.kyrun.getSettings();
+        settings.autoWalkBindEnabled = awe.checked;
+        mergeColorTriggerbotFormIntoSettings(settings);
+        await window.kyrun.saveSettings(settings);
+        showToast(awe.checked ? 'Auto walk bind enabled' : 'Auto walk bind disabled', 'info');
+      } catch {}
+    });
+  }
+
+  // Auto Walk toggle bind input
+  const awBind = $('#setting-auto-walk-bind');
+  if (awBind) {
+    awBind.onclick = async function () {
+      this.value = 'Press key or mouse...';
+      const self = this;
+      const keyH = async e => {
+        e.preventDefault();
+        const name = keyEventToBindLabel(e);
+        self.value = name;
+        cleanup();
+        try {
+          const settings = await window.kyrun.getSettings();
+          settings.autoWalkBindKey = name;
+          settings.autoWalkBindVk = e.keyCode;
+          settings.autoWalkBindIsMouse = false;
+          settings.autoWalkBindEnabled = true;
+          const awEnable = $('#setting-auto-walk-enabled');
+          if (awEnable) awEnable.checked = true;
+          mergeColorTriggerbotFormIntoSettings(settings);
+          await window.kyrun.saveSettings(settings);
+          showToast('Auto walk bind saved', 'success');
+        } catch {}
+      };
+      const mouseH = async e => {
+        if (e.button === 0) return;
+        e.preventDefault(); e.stopPropagation();
+        const names = { 1: 'Middle Mouse', 2: 'Right Mouse', 3: 'Mouse X1 (Side)', 4: 'Mouse X2 (Side)' };
+        const vkCodes = { 1: 4, 2: 2, 3: 5, 4: 6 };
+        const name = names[e.button] || `Mouse ${e.button}`;
+        self.value = name;
+        cleanup();
+        try {
+          const settings = await window.kyrun.getSettings();
+          settings.autoWalkBindKey = name;
+          settings.autoWalkBindVk = vkCodes[e.button] || e.button;
+          settings.autoWalkBindIsMouse = true;
+          settings.autoWalkBindEnabled = true;
+          const awEnable = $('#setting-auto-walk-enabled');
+          if (awEnable) awEnable.checked = true;
+          mergeColorTriggerbotFormIntoSettings(settings);
+          await window.kyrun.saveSettings(settings);
+          showToast('Auto walk bind saved', 'success');
+        } catch {}
+      };
+      function cleanup() {
+        document.removeEventListener('keydown', keyH);
+        document.removeEventListener('mousedown', mouseH);
+      }
+      document.addEventListener('keydown', keyH);
+      document.addEventListener('mousedown', mouseH);
+    };
+    awBind.oncontextmenu = async e => {
+      e.preventDefault();
+      try {
+        const settings = await window.kyrun.getSettings();
+        settings.autoWalkBindKey = '';
+        settings.autoWalkBindVk = 0;
+        settings.autoWalkBindIsMouse = false;
+        mergeColorTriggerbotFormIntoSettings(settings);
+        await window.kyrun.saveSettings(settings);
+        awBind.value = '';
+        showToast('Auto walk bind cleared', 'info');
+      } catch {}
+    };
+  }
+
+  // Auto Walk key input
+  const awKey = $('#setting-auto-walk-key');
+  if (awKey) {
+    awKey.onclick = function () {
+      this.value = 'Press a key...';
+      const self = this;
+      const keyH = async e => {
+        e.preventDefault();
+        const name = keyEventToBindLabel(e);
+        self.value = name;
+        cleanup();
+        try {
+          const settings = await window.kyrun.getSettings();
+          settings.autoWalkKeyName = name;
+          settings.autoWalkKeyVk = e.keyCode;
+          mergeColorTriggerbotFormIntoSettings(settings);
+          await window.kyrun.saveSettings(settings);
+          showToast(`Walk key set to ${name}`, 'success');
+        } catch {}
+      };
+      function cleanup() { document.removeEventListener('keydown', keyH); }
+      document.addEventListener('keydown', keyH);
+    };
+    awKey.oncontextmenu = async e => {
+      e.preventDefault();
+      try {
+        const settings = await window.kyrun.getSettings();
+        settings.autoWalkKeyName = 'W';
+        settings.autoWalkKeyVk = 87;
+        mergeColorTriggerbotFormIntoSettings(settings);
+        await window.kyrun.saveSettings(settings);
+        awKey.value = 'W';
+        showToast('Walk key reset to W', 'info');
+      } catch {}
+    };
+  }
+
+  // Auto Walk status toggle button
+  const awToggleBtn = $('#btn-auto-walk-toggle');
+  if (awToggleBtn) {
+    awToggleBtn.onclick = async () => {
+      try {
+        const result = await window.kyrun.toggleAutoWalk();
+        updateAutoWalkStatusUi(!!(result && result.active));
+      } catch {}
+    };
+  }
+
   const onToggle = async (sel, key, after) => {
     const el = $(sel);
     if (!el) return;

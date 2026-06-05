@@ -8,7 +8,10 @@ contextBridge.exposeInMainWorld('kyrun', {
   setMacroTriggersArmed: (armed) => ipcRenderer.invoke('set-macro-triggers-armed', armed),
   reapplyTriggersToggleBind: () => ipcRenderer.invoke('reapply-triggers-toggle-bind'),
   reapplyColorbotToggleBind: () => ipcRenderer.invoke('reapply-colorbot-toggle-bind'),
+  reapplyAutoWalkBind: () => ipcRenderer.invoke('reapply-auto-walk-bind'),
   toggleColorTriggerbot: () => ipcRenderer.invoke('toggle-color-triggerbot'),
+  toggleAutoWalk: () => ipcRenderer.invoke('toggle-auto-walk'),
+  getAutoWalkState: () => ipcRenderer.invoke('get-auto-walk-state'),
 
   // ── Profiles ───────────────────────────────
   getProfiles: () => ipcRenderer.invoke('get-profiles'),
@@ -80,6 +83,7 @@ contextBridge.exposeInMainWorld('kyrun', {
     ipcRenderer.on('color-triggerbot-debug', fn);
     return () => ipcRenderer.removeListener('color-triggerbot-debug', fn);
   },
+  onAutoWalkState: (cb) => ipcRenderer.on('auto-walk-state', (_, data) => cb(data)),
   onMacroState: (cb) => ipcRenderer.on('macro-state', (_, data) => cb(data)),
   onMacroLine: (cb) => ipcRenderer.on('macro-line', (_, line) => cb(line)),
 

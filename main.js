@@ -23,9 +23,9 @@ let registeredHotkeys = new Map();
 let macroRunning = false;
 let macroAbort = false;
 let mouseTriggerInterval = null; // polling for mouse button triggers
-/** Map of vkCode -> { macroIds: Set<string>, isColorbotToggle: boolean, isTriggersToggle: boolean } */
+/** Map of vkCode -> { macroIds: Set<string>, isColorbotToggle: boolean, isTriggersToggle: boolean, isAutoWalkToggle: boolean } */
 const globalMouseActions = new Map();
-/** Map of accelerator -> { macroIds: Set<string>, isColorbotToggle: boolean, isTriggersToggle: boolean } */
+/** Map of accelerator -> { macroIds: Set<string>, isColorbotToggle: boolean, isTriggersToggle: boolean, isAutoWalkToggle: boolean } */
 const globalHotkeyActions = new Map();
 
 /** Special macroId: fires even when macro triggers are disarmed (toggles armed state). */
@@ -35,7 +35,7 @@ const TOGGLE_COLORBOT_ID = '!kyrun:toggle-colorbot';
 function getOrCreateInfo(map, key) {
   let info = map.get(key);
   if (!info) {
-    info = { macroIds: new Set(), isColorbotToggle: false, isTriggersToggle: false };
+    info = { macroIds: new Set(), isColorbotToggle: false, isTriggersToggle: false, isAutoWalkToggle: false };
     map.set(key, info);
   }
   return info;
@@ -45,7 +45,7 @@ function updateGlobalHotkeyRegistration(accel) {
   try { globalShortcut.unregister(accel); } catch (_) {}
   const info = globalHotkeyActions.get(accel);
   if (!info) return;
-  if (!info.isTriggersToggle && !info.isColorbotToggle && info.macroIds.size === 0) {
+  if (!info.isTriggersToggle && !info.isColorbotToggle && !info.isAutoWalkToggle && info.macroIds.size === 0) {
     globalHotkeyActions.delete(accel);
     return;
   }
@@ -72,6 +72,12 @@ function updateGlobalHotkeyRegistration(accel) {
       // Priority 3: Colorbot Toggle
       if (info.isColorbotToggle) {
         toggleColorTriggerbot();
+        return;
+      }
+
+      // Priority 4: Auto Walk Toggle
+      if (info.isAutoWalkToggle) {
+        toggleAutoWalk();
       }
     });
   } catch (_) {}
@@ -101,12 +107,100 @@ function handleMouseTriggerAction(vkCode) {
   // Priority 3: Colorbot Toggle
   if (info.isColorbotToggle) {
     toggleColorTriggerbot();
+    return;
+  }
+
+  // Priority 4: Auto Walk Toggle
+  if (info.isAutoWalkToggle) {
+    toggleAutoWalk();
   }
 }
 let triggersToggleAccelRegistered = null;
 let triggersToggleMouseVk = null;
 let colorbotToggleAccelRegistered = null;
 let colorbotToggleMouseVk = null;
+let autoWalkToggleAccelRegistered = null;
+let autoWalkToggleMouseVk = null;
+
+// ── Auto Walk ──────────────────────────────────────────────────────
+/** Whether auto walk is currently active (key held down). */
+let autoWalkActive = false;
+/** The VK code being held for walking. */
+let autoWalkHeldVk = 0;
+
+function sendAutoWalkState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('auto-walk-state', { active: autoWalkActive });
+  }
+}
+
+function stopAutoWalk() {
+  if (!autoWalkActive) return;
+  autoWalkActive = false;
+  if (input && autoWalkHeldVk) {
+    try { input.keyUp(autoWalkHeldVk); } catch (_) {}
+  }
+  autoWalkHeldVk = 0;
+  sendAutoWalkState();
+}
+
+function toggleAutoWalk(settings) {
+  const s = settings || appSettings;
+  if (autoWalkActive) {
+    stopAutoWalk();
+  } else {
+    if (!input) return;
+    // Walk key VK defaults to W (0x57 = 87)
+    const walkVk = Number(s.autoWalkKeyVk) || 0x57;
+    autoWalkActive = true;
+    autoWalkHeldVk = walkVk;
+    try { input.keyDown(walkVk); } catch (_) { autoWalkActive = false; autoWalkHeldVk = 0; }
+    sendAutoWalkState();
+  }
+}
+
+function unregisterAutoWalkToggleBind() {
+  if (autoWalkToggleAccelRegistered) {
+    const info = globalHotkeyActions.get(autoWalkToggleAccelRegistered);
+    if (info) {
+      info.isAutoWalkToggle = false;
+      updateGlobalHotkeyRegistration(autoWalkToggleAccelRegistered);
+    }
+    autoWalkToggleAccelRegistered = null;
+  }
+  if (autoWalkToggleMouseVk != null) {
+    const info = globalMouseActions.get(autoWalkToggleMouseVk);
+    if (info) {
+      info.isAutoWalkToggle = false;
+      if (!info.isTriggersToggle && !info.isColorbotToggle && info.macroIds.size === 0) globalMouseActions.delete(autoWalkToggleMouseVk);
+    }
+    autoWalkToggleMouseVk = null;
+    if (globalMouseActions.size === 0) stopMouseTriggerPolling();
+  }
+}
+
+function applyAutoWalkToggleBind(settings) {
+  unregisterAutoWalkToggleBind();
+  if (!settings || !settings.autoWalkBindEnabled) return;
+  const vk = settings.autoWalkBindVk || 0;
+  const isMouse = !!settings.autoWalkBindIsMouse;
+  const keyName = settings.autoWalkBindKey || '';
+  // Mouse button or keyboard key without an Electron accelerator → use VK polling
+  if (isMouse || (!isMouse && vk && !keyNameToElectronAccelerator(keyName))) {
+    if (!input || !vk) return;
+    const info = getOrCreateInfo(globalMouseActions, vk);
+    info.isAutoWalkToggle = true;
+    autoWalkToggleMouseVk = vk;
+    startMouseTriggerPolling();
+    return;
+  }
+  const accel = keyNameToElectronAccelerator(keyName);
+  if (!accel) return;
+  const info = getOrCreateInfo(globalHotkeyActions, accel);
+  info.isAutoWalkToggle = true;
+  autoWalkToggleAccelRegistered = accel;
+  updateGlobalHotkeyRegistration(accel);
+}
 
 /** Global macro recording while the window is unfocused (GetAsyncKeyState polling). */
 let recordCaptureInterval = null;
@@ -1373,7 +1467,10 @@ function loadSettings() {
   return merged;
 }
 
-/** Same rules as renderer `convertToElectronAccelerator` — keyboard-only. */
+/** Same rules as renderer `convertToElectronAccelerator` — keyboard-only.
+ *  Returns null for keys that cannot be used as Electron globalShortcut accelerators
+ *  (punctuation/symbols). Those must be handled via VK polling instead.
+ */
 function keyNameToElectronAccelerator(keyname) {
   if (!keyname) return null;
   if (keyname.includes('Mouse')) return null;
@@ -1391,6 +1488,8 @@ function keyNameToElectronAccelerator(keyname) {
     LShift: 'Shift', RShift: 'Shift', Shift: 'Shift',
     LCtrl: 'Control', RCtrl: 'Control', Ctrl: 'Control',
     LAlt: 'Alt', RAlt: 'Alt', Alt: 'Alt'
+    // Punctuation/symbols (;  '  ,  .  /  \  [  ]  `  -  =) intentionally omitted:
+    // globalShortcut cannot register them reliably. They are handled via VK polling.
   };
   if (map[keyname]) return map[keyname];
   return null;
@@ -1442,7 +1541,8 @@ function applyColorbotToggleBind(settings) {
   const vk = settings.colorTriggerbotToggleBindVk || 0;
   const isMouse = !!settings.colorTriggerbotToggleBindIsMouse;
   const keyName = settings.colorTriggerbotToggleBindKey || '';
-  if (isMouse) {
+  // Mouse button or keyboard key without an Electron accelerator → use VK polling
+  if (isMouse || (!isMouse && vk && !keyNameToElectronAccelerator(keyName))) {
     if (!input || !vk) return;
     const info = getOrCreateInfo(globalMouseActions, vk);
     info.isColorbotToggle = true;
@@ -1464,7 +1564,8 @@ function applyTriggersToggleBind(settings) {
   const vk = settings.triggersToggleBindVk || 0;
   const isMouse = !!settings.triggersToggleBindIsMouse;
   const keyName = settings.triggersToggleBindKey || '';
-  if (isMouse) {
+  // Mouse button or keyboard key without an Electron accelerator → use VK polling
+  if (isMouse || (!isMouse && vk && !keyNameToElectronAccelerator(keyName))) {
     if (!input || !vk) return;
     const info = getOrCreateInfo(globalMouseActions, vk);
     info.isTriggersToggle = true;
@@ -1724,6 +1825,7 @@ function setupIPC() {
     saveSettings(settings);
     applyTriggersToggleBind(appSettings);
     applyColorbotToggleBind(appSettings);
+    applyAutoWalkToggleBind(appSettings);
     applyColorTriggerbot(appSettings, enabled !== undefined ? !!enabled : colorTriggerbotActive);
     return true;
   });
@@ -1744,6 +1846,18 @@ function setupIPC() {
     applyColorbotToggleBind(appSettings);
     return true;
   });
+
+  ipcMain.handle('reapply-auto-walk-bind', () => {
+    applyAutoWalkToggleBind(appSettings);
+    return true;
+  });
+
+  ipcMain.handle('toggle-auto-walk', () => {
+    toggleAutoWalk();
+    return { active: autoWalkActive };
+  });
+
+  ipcMain.handle('get-auto-walk-state', () => ({ active: autoWalkActive }));
 
   ipcMain.handle('get-macro-triggers-state', () => ({ armed: macroTriggersArmed }));
   ipcMain.handle('set-macro-triggers-armed', (_, armed) => {
@@ -2493,6 +2607,7 @@ app.whenReady().then(() => {
   }
   applyTriggersToggleBind(appSettings);
   applyColorbotToggleBind(appSettings);
+  applyAutoWalkToggleBind(appSettings);
   applyColorTriggerbot(appSettings, false);
   sendMacroTriggersState();
 });
@@ -2514,5 +2629,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopRecordCapturePolling();
   stopColorTriggerbotPolling();
+  stopAutoWalk();
   unregisterColorbotToggleBind();
+  unregisterAutoWalkToggleBind();
 });
