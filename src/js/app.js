@@ -110,6 +110,7 @@ function syncProfileTtsSettingsUi() {
   const sup = $('#setting-profile-tts-suppress-privacy');
   const hk = $('#setting-hotkeys-tts-enabled');
   const cb = $('#setting-colorbot-tts-enabled');
+  const aw = $('#setting-autowalk-tts-enabled');
   const disabled = !!(en && !en.checked);
   if (hot) hot.disabled = disabled;
   if (ui) ui.disabled = disabled;
@@ -117,6 +118,7 @@ function syncProfileTtsSettingsUi() {
   if (sup) sup.disabled = disabled;
   if (hk) hk.disabled = disabled;
   if (cb) cb.disabled = disabled;
+  if (aw) aw.disabled = disabled;
 }
 
 async function speakProfileName(profileName, source) {
@@ -167,6 +169,23 @@ async function speakColorbotState(enabled) {
   if (!settings || settings.profileTtsEnabled === false || settings.colorbotTtsEnabled === false) return;
   if (settings.profileTtsSuppressPrivacy && privacyActive()) return;
   const text = enabled ? 'Color bot enabled' : 'Color bot disabled';
+  try {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  } catch {}
+}
+
+async function speakAutoWalkState(enabled) {
+  if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== 'function') return;
+  let settings;
+  try {
+    settings = await window.kyrun.getSettings();
+  } catch {
+    return;
+  }
+  if (!settings || settings.profileTtsEnabled === false || settings.autoWalkTtsEnabled === false) return;
+  if (settings.profileTtsSuppressPrivacy && privacyActive()) return;
+  const text = enabled ? 'Auto walk enabled' : 'Auto walk disabled';
   try {
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
@@ -696,7 +715,9 @@ let suppressHotkeyTriggersUntil = 0;
 let suppressNextProfileChangedTts = false;
 let hotkeysTtsReady = false;
 let colorbotTtsReady = false;
+let autoWalkTtsReady = false;
 let lastColorbotEnabled = false;
+let lastAutoWalkActive = false;
 function scheduleReloadProfileTriggers(delayMs = 400) {
   suppressHotkeyTriggersUntil = Date.now() + delayMs + 350;
   setTimeout(() => { void reloadProfileTriggers(); }, delayMs);
@@ -3335,6 +3356,7 @@ async function loadSettingsToForm() {
     const ptsp = $('#setting-profile-tts-suppress-privacy');
     const hkte = $('#setting-hotkeys-tts-enabled');
     const cbte = $('#setting-colorbot-tts-enabled');
+    const awte = $('#setting-autowalk-tts-enabled');
     if (mt) mt.checked = s.minimizeToTray !== false;
     if (sm) sm.checked = !!s.startMinimized;
     if (st) st.checked = !!s.streamerMode;
@@ -3352,6 +3374,7 @@ async function loadSettingsToForm() {
     if (ptsp) ptsp.checked = !!s.profileTtsSuppressPrivacy;
     if (hkte) hkte.checked = s.hotkeysTtsEnabled !== false;
     if (cbte) cbte.checked = s.colorbotTtsEnabled !== false;
+    if (awte) awte.checked = s.autoWalkTtsEnabled !== false;
     // Auto Walk
     const awe = $('#setting-auto-walk-enabled');
     const awb = $('#setting-auto-walk-bind');
@@ -3384,8 +3407,24 @@ function wireSettingsControls() {
 
   // Subscribe to auto walk state events
   if (window.kyrun.onAutoWalkState) {
-    window.kyrun.onAutoWalkState(data => updateAutoWalkStatusUi(!!(data && data.active)));
+    window.kyrun.onAutoWalkState(data => {
+      const active = !!(data && data.active);
+      if (autoWalkTtsReady && active !== lastAutoWalkActive) {
+        void speakAutoWalkState(active);
+      }
+      lastAutoWalkActive = active;
+      updateAutoWalkStatusUi(active);
+    });
   }
+
+  // Get initial auto walk state
+  try {
+    window.kyrun.getAutoWalkState().then(data => {
+      const active = !!(data && data.active);
+      lastAutoWalkActive = active;
+      updateAutoWalkStatusUi(active);
+    });
+  } catch {}
 
   // Auto Walk enable toggle
   const awe = $('#setting-auto-walk-enabled');
@@ -3644,6 +3683,7 @@ function wireSettingsControls() {
   const ptsp = $('#setting-profile-tts-suppress-privacy');
   const hkte = $('#setting-hotkeys-tts-enabled');
   const cbte = $('#setting-colorbot-tts-enabled');
+  const awte = $('#setting-autowalk-tts-enabled');
   async function saveProfileTtsSettingsFromUi() {
     try {
       const settings = await window.kyrun.getSettings();
@@ -3656,6 +3696,7 @@ function wireSettingsControls() {
       settings.profileTtsSuppressPrivacy = !!(ptsp && ptsp.checked);
       settings.hotkeysTtsEnabled = !!(hkte && hkte.checked);
       settings.colorbotTtsEnabled = !!(cbte && cbte.checked);
+      settings.autoWalkTtsEnabled = !!(awte && awte.checked);
       mergeColorTriggerbotFormIntoSettings(settings);
       await window.kyrun.saveSettings(settings);
       syncProfileTtsSettingsUi();
@@ -3668,6 +3709,7 @@ function wireSettingsControls() {
   if (ptsp) ptsp.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
   if (hkte) hkte.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
   if (cbte) cbte.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
+  if (awte) awte.addEventListener('change', () => { void saveProfileTtsSettingsFromUi(); });
 
   const ctToggleBind = $('#setting-color-trigger-toggle-bind');
   if (ctToggleBind) {
@@ -3898,6 +3940,7 @@ document.addEventListener('click', e=>{ if(!e.target.closest('.context-menu'))hi
   } catch {}
   hotkeysTtsReady = true;
   colorbotTtsReady = true;
+  autoWalkTtsReady = true;
   // We cannot reload triggers simultaneously because it reads the same macro files we just grabbed
   setTimeout(reloadProfileTriggers, 500);
   try {

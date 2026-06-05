@@ -1424,6 +1424,8 @@ function loadSettings() {
     hotkeysTtsEnabled: true,
     /** Speak when color triggerbot is enabled or disabled. */
     colorbotTtsEnabled: true,
+    /** Speak when auto walk is enabled or disabled. */
+    autoWalkTtsEnabled: true,
     colorTriggerbotEnabled: false,
     colorTriggerbotSource: 'preset',
     colorTriggerbotPreset: 'bluegreen',
