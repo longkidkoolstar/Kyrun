@@ -806,7 +806,7 @@ function getRunIfColorPreview() {
   if (state.selectedIndices.size !== 1) return null;
   const startIndex = [...state.selectedIndices][0];
   const cmd = state.commands[startIndex];
-  if (!cmd || cmd.type !== 'RunIfColor') return null;
+  if (!cmd || (cmd.type !== 'RunIfColor' && cmd.type !== 'RunIfButton')) return null;
   const rawEndLine = Number(cmd.endLine);
   if (!Number.isFinite(rawEndLine)) return null;
   const endIndex = Math.min(state.commands.length - 1, Math.max(startIndex, Math.round(rawEndLine) - 1));
@@ -814,7 +814,7 @@ function getRunIfColorPreview() {
 }
 
 function getTypeClass(t) {
-  const m = { KeyDown:'command-row__type--keydown',KeyUp:'command-row__type--keyup',LeftDown:'command-row__type--mousedown',LeftUp:'command-row__type--mouseup',RightDown:'command-row__type--mousedown',RightUp:'command-row__type--mouseup',MiddleDown:'command-row__type--mousedown',MiddleUp:'command-row__type--mouseup',XButton1Down:'command-row__type--mousedown',XButton1Up:'command-row__type--mouseup',XButton2Down:'command-row__type--mousedown',XButton2Up:'command-row__type--mouseup',ScrollUp:'command-row__type--mousemove',ScrollDown:'command-row__type--mousemove',Delay:'command-row__type--delay',RandomDelay:'command-row__type--delay',GoTo:'command-row__type--goto',GoWhile:'command-row__type--loop',Comment:'command-row__type--comment',Variable:'command-row__type--variable',ColorDetect:'command-row__type--color',WaitForPixelColor:'command-row__type--color',RunIfColor:'command-row__type--color',MouseMove:'command-row__type--mousemove'};
+  const m = { KeyDown:'command-row__type--keydown',KeyUp:'command-row__type--keyup',LeftDown:'command-row__type--mousedown',LeftUp:'command-row__type--mouseup',RightDown:'command-row__type--mousedown',RightUp:'command-row__type--mouseup',MiddleDown:'command-row__type--mousedown',MiddleUp:'command-row__type--mouseup',XButton1Down:'command-row__type--mousedown',XButton1Up:'command-row__type--mouseup',XButton2Down:'command-row__type--mousedown',XButton2Up:'command-row__type--mouseup',ScrollUp:'command-row__type--mousemove',ScrollDown:'command-row__type--mousemove',Delay:'command-row__type--delay',RandomDelay:'command-row__type--delay',GoTo:'command-row__type--goto',GoWhile:'command-row__type--loop',Comment:'command-row__type--comment',Variable:'command-row__type--variable',ColorDetect:'command-row__type--color',WaitForPixelColor:'command-row__type--color',RunIfColor:'command-row__type--color',RunIfButton:'command-row__type--color',MouseMove:'command-row__type--mousemove'};
   return m[t]||'';
 }
 
@@ -838,6 +838,12 @@ function formatParams(cmd) {
       const relation = mode === 'notMatch' ? 'is not' : 'is';
       const jumpText = cmd.jumpOnMatch ? ' [jump on match]' : '';
       return `Run through line ${cmd.endLine} if (${cmd.x},${cmd.y}) ${relation} #${cmd.color} <=${cmd.tolerance ?? 10}${jumpText}`;
+    }
+    case 'RunIfButton': {
+      const mode = cmd.mode || 'held';
+      const relation = mode === 'notHeld' ? 'is not held' : 'is held';
+      const keyName = getKeyName(cmd.keyCode) || `Key ${cmd.keyCode}`;
+      return `Run through line ${cmd.endLine} if ${keyName} ${relation}`;
     }
     case 'WaitForPixelColor': {
       const mode = cmd.mode || 'match';
@@ -908,6 +914,22 @@ function showCommandProperties(idx) {
         + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color">🎨 Pick from Screen</button>`
         + `<button class="btn btn--secondary" style="margin-top:6px;width:100%" id="btn-pick-color-screenshot">🖼 Pick from Screenshot</button>`
         + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 0 0;line-height:1.35">Place this before a block. If the condition fails, Kyrun skips every line through the line number above. The jump toggle also lets Kyrun skip ahead to this block before it would normally reach it.</p>`;
+      break;
+    case 'RunIfButton':
+      html = `<div class="properties-panel__field">
+                <label class="properties-panel__label">Condition</label>
+                <select class="properties-panel__select" data-prop="mode" data-idx="${idx}" style="width:100%;margin-bottom:8px">
+                  <option value="held" ${cmd.mode==='held'?'selected':''}>Loop while held down</option>
+                  <option value="notHeld" ${cmd.mode==='notHeld'?'selected':''}>Loop while NOT held down</option>
+                </select>
+              </div>`
+           + `<div class="properties-panel__field">
+                <label class="properties-panel__label">Button / Key</label>
+                <input type="text" class="properties-panel__input" id="prop-if-button-bind" readonly placeholder="Click to bind..." data-prop="keyCode" data-idx="${idx}" value="${getKeyName(cmd.keyCode) || ''}" title="Click to bind · Right-click to clear">
+              </div>`
+           + field('Run Through Line', 'endLine', 'number')
+           + checkboxField('Play debug sound when condition is met', 'playSoundOnMatch', !!cmd.playSoundOnMatch)
+           + `<p class="properties-panel__hint" style="font-size:11px;color:var(--text-muted, #888);margin:6px 0 0 0;line-height:1.35">Loops over the commands from this line through the line number above, as long as the condition is met. Once the key condition is no longer met, the macro continues to the rest of the commands after that block.</p>`;
       break;
     case 'WaitForPixelColor':
       if (waitMode === 'orMatch') syncOrMatchPositions(cmd);
@@ -1043,6 +1065,56 @@ function showCommandProperties(idx) {
   if (colorBBtn) colorBBtn.onclick = async () => { await captureCurrentScreenSample(idx, { captureColor: true, xProp: 'xB', yProp: 'yB', colorProp: 'colorB', colorLabel: 'color B' }); };
   const colorBScreenshotBtn = document.getElementById('btn-pick-color-b-screenshot');
   if (colorBScreenshotBtn) colorBScreenshotBtn.onclick = () => openArmedScreenCaptureSetup(idx, { captureColor: true, xProp: 'xB', yProp: 'yB', colorProp: 'colorB', colorLabel: 'color B', captureMode: 'screenshot' });
+
+  // Bind capture listener for RunIfButton command
+  const ifButtonBind = document.getElementById('prop-if-button-bind');
+  if (ifButtonBind) {
+    ifButtonBind.onclick = function() {
+      this.value = 'Press key or mouse...';
+      const self = this;
+      const keyH = e => {
+        e.preventDefault();
+        const name = keyEventToBindLabel(e);
+        self.value = name;
+        pushUndo();
+        cmd.keyCode = e.keyCode;
+        state.currentMacro.dirty = true;
+        cleanup();
+        renderCommands();
+        showCommandProperties(idx);
+      };
+      const mouseH = e => {
+        if (e.button === 0) return; // ignore left click
+        e.preventDefault(); e.stopPropagation();
+        const vkCodes = { 1: 4, 2: 2, 3: 5, 4: 6 };
+        const vk = vkCodes[e.button];
+        if (!vk) return;
+        const names = { 1: 'Middle Mouse', 2: 'Right Mouse', 3: 'Mouse X1 (Side)', 4: 'Mouse X2 (Side)' };
+        const name = names[e.button] || `Mouse ${e.button}`;
+        self.value = name;
+        pushUndo();
+        cmd.keyCode = vk;
+        state.currentMacro.dirty = true;
+        cleanup();
+        renderCommands();
+        showCommandProperties(idx);
+      };
+      function cleanup() {
+        document.removeEventListener('keydown', keyH);
+        document.removeEventListener('mousedown', mouseH);
+      }
+      document.addEventListener('keydown', keyH);
+      document.addEventListener('mousedown', mouseH);
+    };
+    ifButtonBind.oncontextmenu = e => {
+      e.preventDefault();
+      pushUndo();
+      cmd.keyCode = 0;
+      state.currentMacro.dirty = true;
+      renderCommands();
+      showCommandProperties(idx);
+    };
+  }
 }
 
 // ── Add Command ──────────────────────────────────────────────
@@ -1088,6 +1160,7 @@ function addCommand(type) {
     case 'Comment': cmds = [{ type, value: 'Comment' }]; break;
     case 'ColorDetect': cmds = [{ type, x: 0, y: 0, color: 'FF0000', tolerance: 10 }]; break;
     case 'RunIfColor': cmds = [{ type, mode: 'match', x: 0, y: 0, color: 'FF0000', tolerance: 10, endLine: Math.max(2, insertAt + 2), jumpOnMatch: false, playSoundOnMatch: false }]; break;
+    case 'RunIfButton': cmds = [{ type, mode: 'held', keyCode: 16, endLine: Math.max(2, insertAt + 2) }]; break;
     case 'WaitForPixelColor': cmds = [{ type, mode: 'match', x: 0, y: 0, color: 'FF0000', colorA: 'FF0000', colorB: '00FF00', fromColor: 'FF0000', toColor: '00FF00', tolerance: 10, timeoutMs: 1000, pollMs: 16, playSoundOnMatch: false }]; break;
     case 'Variable': cmds = [{ type, varName: 'var1', operation: '=', varValue: 0 }]; break;
     default: cmds = [{ type }]; break;

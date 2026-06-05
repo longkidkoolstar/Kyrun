@@ -2180,6 +2180,15 @@ function setupIPC() {
       return (cmd.mode || 'match') === 'notMatch' ? !matched : matched;
     }
 
+    function buttonConditionMatches(cmd) {
+      if (!input) return false;
+      const vk = Number(cmd.keyCode);
+      if (!vk) return false;
+      const isDown = input.isKeyDown(vk);
+      const mode = cmd.mode || 'held'; // 'held' or 'notHeld'
+      return mode === 'notHeld' ? !isDown : isDown;
+    }
+
     function getJumpToRunIfColorIndex(cmds, currentIndex) {
       for (let i = currentIndex + 1; i < cmds.length; i++) {
         const candidate = cmds[i];
@@ -2349,6 +2358,17 @@ function setupIPC() {
               }
               break;
             }
+            case 'RunIfButton': {
+              const matched = buttonConditionMatches(cmd);
+              if (matched && cmd.playSoundOnMatch) {
+                try { shell.beep(); } catch (_) {}
+              }
+              if (!matched) {
+                const endIndex = Math.max(i, toCoord(cmd.endLine) - 1);
+                i = endIndex;
+              }
+              break;
+            }
             case 'WaitForPixelColor': {
               const matched = await waitForPixelColor(cmd);
               if (matched && cmd.playSoundOnMatch) {
@@ -2358,6 +2378,21 @@ function setupIPC() {
             }
           }
         } catch(err) { /* skip command on error */ }
+
+        // Loop back check for RunIfButton blocks
+        for (let k = 0; k < cmds.length; k++) {
+          const candidate = cmds[k];
+          if (candidate && candidate.type === 'RunIfButton' && !candidate.breakpoint) {
+            const endIdx = toCoord(candidate.endLine) - 2;
+            if (i === endIdx) {
+              if (buttonConditionMatches(candidate)) {
+                i = k - 1; // loop back to the RunIfButton command
+                await new Promise(r => setTimeout(r, 1)); // Yield to prevent CPU freeze/lag spike
+                break;
+              }
+            }
+          }
+        }
       }
     }
 
