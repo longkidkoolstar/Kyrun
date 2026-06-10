@@ -37,8 +37,8 @@ contextBridge.exposeInMainWorld('kyrun', {
 
   // ── Macro Execution ────────────────────────
   executeMacro: (commands, settings) => ipcRenderer.invoke('execute-macro', commands, settings),
-  stopMacro: () => ipcRenderer.invoke('stop-macro'),
-  isMacroRunning: () => ipcRenderer.invoke('is-macro-running'),
+  stopMacro: (opts) => ipcRenderer.invoke('stop-macro', opts),
+  isMacroRunning: (opts) => ipcRenderer.invoke('is-macro-running', opts),
   registerMouseTrigger: (id, vk) => ipcRenderer.invoke('register-mouse-trigger', id, vk),
   unregisterMouseTrigger: (vk) => ipcRenderer.invoke('unregister-mouse-trigger', vk),
 

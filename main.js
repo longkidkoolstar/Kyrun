@@ -20,8 +20,38 @@ let anonymousDisplayTitle = '';
 let currentProfile = 'Default';
 let appSettings = {};
 let registeredHotkeys = new Map();
-let macroRunning = false;
-let macroAbort = false;
+let nextMacroRunId = 0;
+/** @type {Map<number, { abort: boolean, parallel: boolean, macroPath: string }>} */
+const activeMacroRuns = new Map();
+
+function hasAnyMacroRunning() {
+  return activeMacroRuns.size > 0;
+}
+
+function hasExclusiveMacroRunning() {
+  for (const run of activeMacroRuns.values()) {
+    if (!run.parallel) return true;
+  }
+  return false;
+}
+
+function broadcastMacroState() {
+  if (mainWindow) {
+    mainWindow.webContents.send('macro-state', { running: hasAnyMacroRunning() });
+  }
+}
+
+function normalizeMacroPath(p) {
+  return String(p || '').replace(/\\/g, '/').toLowerCase();
+}
+
+function abortMacroRuns({ macroPath } = {}) {
+  const target = macroPath ? normalizeMacroPath(macroPath) : '';
+  for (const run of activeMacroRuns.values()) {
+    if (target && normalizeMacroPath(run.macroPath) !== target) continue;
+    run.abort = true;
+  }
+}
 let mouseTriggerInterval = null; // polling for mouse button triggers
 /** Map of vkCode -> { macroIds: Set<string>, isColorbotToggle: boolean, isTriggersToggle: boolean, isAutoWalkToggle: boolean } */
 const globalMouseActions = new Map();
@@ -928,7 +958,7 @@ function probeColorTriggerbot(settings) {
     targetMode,
     morphEnabled,
     morphIterations: morphEnabled ? morphIterations : 0,
-    macroRunning: !!macroRunning,
+    macroRunning: hasAnyMacroRunning(),
     ...extra,
     ...analysis
   };
@@ -977,7 +1007,7 @@ function colorTriggerbotTick() {
   const baseDebug = {
     ts: Date.now(),
     region,
-    macroRunning: !!macroRunning,
+    macroRunning: hasAnyMacroRunning(),
     action,
     holdWhileOnTarget: !!holdWhileOnTarget,
     clickMode,
@@ -985,7 +1015,7 @@ function colorTriggerbotTick() {
     buttonHeld: colorTriggerbotButtonHeld
   };
 
-  if (macroRunning) {
+  if (hasAnyMacroRunning()) {
     colorTriggerbotReleaseHold();
     colorTriggerbotCancelClickRelease();
     if (debug) sendColorTriggerbotDebug({ ...baseDebug, captureOk: false, skipped: 'macro running' });
@@ -1286,7 +1316,8 @@ function ensureDirectories() {
         windowBind: '',
         holdWhilePressed: false,
         holdBetweenPassesMs: 45,
-        bindSecondPressStops: false
+        bindSecondPressStops: false,
+        parallel: false
       }
     };
     fs.writeFileSync(
@@ -1914,7 +1945,7 @@ function setupIPC() {
       name: name,
       version: '1.0',
       commands: [],
-      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '', holdWhilePressed: false, holdBetweenPassesMs: 45, bindSecondPressStops: false }
+      settings: { loop: false, loopCount: 1, bindKey: '', windowBind: '', holdWhilePressed: false, holdBetweenPassesMs: 45, bindSecondPressStops: false, parallel: false }
     };
     const filePath = path.join(PROFILES_DIR, profile, `${name}.kyrun`);
     fs.writeFileSync(filePath, JSON.stringify(macro, null, 2));
@@ -2161,11 +2192,16 @@ function setupIPC() {
 
   // ── Macro Execution ──────────────────────────────────────────────
   ipcMain.handle('execute-macro', async (_, commands, settings) => {
-    if (macroRunning) return { success: false, error: 'Macro already running' };
+    const parallel = !!settings.parallel;
+    if (!parallel && hasExclusiveMacroRunning()) {
+      return { success: false, error: 'Macro already running' };
+    }
     if (!input) return { success: false, error: 'Input module not available' };
-    macroRunning = true;
-    macroAbort = false;
-    mainWindow.webContents.send('macro-state', { running: true });
+
+    const runId = ++nextMacroRunId;
+    const run = { abort: false, parallel, macroPath: settings.macroPath || '' };
+    activeMacroRuns.set(runId, run);
+    broadcastMacroState();
 
     const speed = (settings.speedMultiplier || 1);
     const globalSettings = loadSettings();
@@ -2212,15 +2248,15 @@ function setupIPC() {
       if (releaseVk) {
         const deadline = Date.now() + ms;
         while (Date.now() < deadline) {
-          if (macroAbort) return;
-          if (!input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+          if (run.abort) return;
+          if (!input.isKeyDown(releaseVk)) { run.abort = true; return; }
           await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
         }
       } else {
         // Chunk delays so Stop / switching to another macro is not blocked for the full Delay duration.
         const deadline = Date.now() + ms;
         while (Date.now() < deadline) {
-          if (macroAbort) return;
+          if (run.abort) return;
           await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
         }
       }
@@ -2232,14 +2268,14 @@ function setupIPC() {
       if (releaseVk) {
         const deadline = Date.now() + ms;
         while (Date.now() < deadline) {
-          if (macroAbort) return;
-          if (!input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+          if (run.abort) return;
+          if (!input.isKeyDown(releaseVk)) { run.abort = true; return; }
           await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
         }
       } else {
         const deadline = Date.now() + ms;
         while (Date.now() < deadline) {
-          if (macroAbort) return;
+          if (run.abort) return;
           await new Promise(r => setTimeout(r, Math.min(16, Math.max(1, deadline - Date.now()))));
         }
       }
@@ -2317,8 +2353,8 @@ function setupIPC() {
     async function waitForPixelPredicate(cmd, matcher) {
       const { x, y, pollMs, timeoutMs, deadline } = getWaitCommandOptions(cmd);
 
-      while (!macroAbort) {
-        if (releaseVk && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+      while (!run.abort) {
+        if (releaseVk && !input.isKeyDown(releaseVk)) { run.abort = true; return; }
         const sampledColor = input.getPixelColor(x, y);
         if (matcher(sampledColor)) return true;
         const remainingMs = deadline - Date.now();
@@ -2355,8 +2391,8 @@ function setupIPC() {
         const posB = resolveWaitPosition(cmd, 'xB', 'yB');
         const { pollMs, timeoutMs, deadline } = getWaitTimingOptions(cmd);
 
-        while (!macroAbort) {
-          if (releaseVk && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+        while (!run.abort) {
+          if (releaseVk && !input.isKeyDown(releaseVk)) { run.abort = true; return; }
           const sampledColorA = input.getPixelColor(posA.x, posA.y);
           if (colorsMatchWithinTolerance(sampledColorA, colorA, tolerance)) return true;
           const sampledColorB = input.getPixelColor(posB.x, posB.y);
@@ -2379,11 +2415,11 @@ function setupIPC() {
 
     async function runOnce(cmds) {
       for (let i = 0; i < cmds.length; i++) {
-        if (macroAbort) return;
+        if (run.abort) return;
         // Skip release check before line 0: right after the hotkey fires, GetAsyncKeyState
         // for the trigger can briefly read "up" (or mismatch bindVk), which aborted before
         // the first command and looked like execution started on line 2. Delays still poll in sleep().
-        if (releaseVk && i > 0 && !input.isKeyDown(releaseVk)) { macroAbort = true; return; }
+        if (releaseVk && i > 0 && !input.isKeyDown(releaseVk)) { run.abort = true; return; }
         const jumpToIndex = getJumpToRunIfColorIndex(cmds, i);
         if (jumpToIndex > i) {
           i = jumpToIndex - 1;
@@ -2391,7 +2427,7 @@ function setupIPC() {
         }
         const cmd = cmds[i];
         if (cmd && cmd.breakpoint) continue;
-        mainWindow.webContents.send('macro-line', i);
+        mainWindow.webContents.send('macro-line', { line: i, macroPath: run.macroPath });
         try {
           switch (cmd.type) {
             case 'KeyDown':
@@ -2516,14 +2552,14 @@ function setupIPC() {
       if (holdActive) {
         let firstHoldPass = true;
         do {
-          if (macroAbort) break;
+          if (run.abort) break;
           if (!firstHoldPass && holdPassGapMs > 0) await sleepHoldPassGap(holdPassGapMs);
           firstHoldPass = false;
           await runOnce(commands);
-        } while (!macroAbort && input.isKeyDown(releaseVk));
+        } while (!run.abort && input.isKeyDown(releaseVk));
       } else if (loopEnabled) {
         let iterations = 0;
-        while (!macroAbort && (loopCount === 0 || iterations < loopCount)) {
+        while (!run.abort && (loopCount === 0 || iterations < loopCount)) {
           await runOnce(commands);
           iterations++;
         }
@@ -2535,20 +2571,27 @@ function setupIPC() {
       releaseTrackedHoldInputs();
     }
 
-    macroRunning = false;
-    macroAbort = false;
-    mainWindow.webContents.send('macro-state', { running: false });
+    activeMacroRuns.delete(runId);
+    broadcastMacroState();
     return { success: true };
   });
 
-  ipcMain.handle('stop-macro', () => {
-    macroAbort = true;
-    // Keep macroRunning true until execute-macro finishes (finally + release); so is-macro-running
-    // and queued triggers can wait for a clean handoff to the next macro.
+  ipcMain.handle('stop-macro', (_, opts) => {
+    abortMacroRuns(opts || {});
     return true;
   });
 
-  ipcMain.handle('is-macro-running', () => macroRunning);
+  ipcMain.handle('is-macro-running', (_, opts) => {
+    const macroPath = opts && opts.macroPath;
+    if (macroPath) {
+      const target = normalizeMacroPath(macroPath);
+      for (const run of activeMacroRuns.values()) {
+        if (normalizeMacroPath(run.macroPath) === target) return true;
+      }
+      return false;
+    }
+    return hasAnyMacroRunning();
+  });
 
   ipcMain.handle('start-global-record-capture', () => {
     if (!input) return { success: false };

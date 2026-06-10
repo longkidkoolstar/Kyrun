@@ -83,7 +83,7 @@ const state = {
   isAnonymous: false,
   streamerMode: false,
   cachedPidText: '',
-  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false, holdWhilePressed: false, holdBetweenPassesMs: 45, bindSecondPressStops: false },
+  macroSettings: { loop: false, loopCount: 0, bindKey: '', bindVk: 0, bindIsMouse: false, randomDelays: false, holdWhilePressed: false, holdBetweenPassesMs: 45, bindSecondPressStops: false, parallel: false },
   speedMultiplier: 1.0,
   currentView: 'editor',
   hasRobot: false,
@@ -698,7 +698,7 @@ async function openMacro(item) {
   }
   state.currentMacro = { name: data.name||item.name, path: item.path, dirty: false };
   state.commands = data.commands || [];
-  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, holdWhilePressed:false, holdBetweenPassesMs:45, bindSecondPressStops:false, ...data.settings };
+  state.macroSettings = { loop:false, loopCount:0, bindKey:'', bindVk:0, bindIsMouse:false, randomDelays:false, holdWhilePressed:false, holdBetweenPassesMs:45, bindSecondPressStops:false, parallel:false, ...data.settings };
   state.selectedIndices.clear(); state.undoStack=[]; state.redoStack=[];
   $('#welcome-view').classList.add('hidden');
   $('#settings-view').classList.remove('settings-view--visible');
@@ -743,6 +743,8 @@ function commitMacroSettingsFromUI() {
   }
   const b2s = $('#bind-second-press-stops');
   if (b2s) state.macroSettings.bindSecondPressStops = !!b2s.checked;
+  const par = $('#parallel-enabled');
+  if (par) state.macroSettings.parallel = !!par.checked;
 }
 
 async function saveMacro(opts = {}) {
@@ -1331,9 +1333,10 @@ function recordWheelHandler(e) {
 }
 
 // ── Macro Execution ──────────────────────────────────────────
-async function waitForMacroStopped(maxMs = 15000) {
+async function waitForMacroStopped(maxMs = 15000, macroPath = null) {
   const start = Date.now();
-  while (await window.kyrun.isMacroRunning()) {
+  const opts = macroPath ? { macroPath } : undefined;
+  while (await window.kyrun.isMacroRunning(opts)) {
     if (Date.now() - start > maxMs) break;
     await new Promise(r => setTimeout(r, 16));
   }
@@ -1349,11 +1352,11 @@ function sameMacroRelPath(a, b) {
 
 async function runMacro() {
   if (!state.currentMacro || !state.commands.length) { showToast('No macro to run','error'); return; }
-  if (await window.kyrun.isMacroRunning()) {
+  if (!state.macroSettings.parallel && await window.kyrun.isMacroRunning()) {
     try { await window.kyrun.stopMacro(); } catch {}
     await waitForMacroStopped();
   }
-  const settings = { ...state.macroSettings, speedMultiplier: state.speedMultiplier, triggerFromBind: false };
+  const settings = { ...state.macroSettings, speedMultiplier: state.speedMultiplier, triggerFromBind: false, macroPath: state.currentMacro.path };
   const prevPath = executionMacroPath;
   executionMacroPath = state.currentMacro.path;
   try {
@@ -1745,6 +1748,8 @@ function updateMacroSettings() {
   $('#random-delays').checked = state.macroSettings.randomDelays;
   const b2s = $('#bind-second-press-stops');
   if (b2s) b2s.checked = !!state.macroSettings.bindSecondPressStops;
+  const par = $('#parallel-enabled');
+  if (par) par.checked = !!state.macroSettings.parallel;
   $('#bind-key-input').value = state.macroSettings.bindKey||'';
 }
 function syncAnonymousButtonUI() {
@@ -1883,7 +1888,10 @@ try {
     if (!data.running) executionMacroPath = null;
     updateRunningUI(data.running);
   });
-  window.kyrun.onMacroLine(line => {
+  window.kyrun.onMacroLine(data => {
+    const line = typeof data === 'object' ? data.line : data;
+    const macroPath = typeof data === 'object' ? data.macroPath : null;
+    if (macroPath && state.currentMacro && !sameMacroRelPath(macroPath, state.currentMacro.path)) return;
     $$('.command-row--executing').forEach(r=>r.classList.remove('command-row--executing'));
     const row=$(`.command-row[data-index="${line}"]`);
     if(row) row.classList.add('command-row--executing');
@@ -1938,17 +1946,21 @@ try {
       if (!data || !data.commands) return;
     } catch { return; }
 
-    const running = await window.kyrun.isMacroRunning();
-    const stopOnly = !!(data.settings && data.settings.bindSecondPressStops)
-      && sameMacroRelPath(executionMacroPath, macroPath);
+    const isParallel = !!(data.settings && data.settings.parallel);
+    const stopOnly = !!(data.settings && data.settings.bindSecondPressStops);
 
-    if (running) {
-      try { await window.kyrun.stopMacro(); } catch {}
-      await waitForMacroStopped();
-      if (stopOnly) return;
+    if (stopOnly && await window.kyrun.isMacroRunning({ macroPath })) {
+      try { await window.kyrun.stopMacro({ macroPath }); } catch {}
+      await waitForMacroStopped(15000, macroPath);
+      return;
     }
 
-    const settings = { ...data.settings, speedMultiplier: state.speedMultiplier, triggerFromBind: true };
+    if (!isParallel && await window.kyrun.isMacroRunning()) {
+      try { await window.kyrun.stopMacro(); } catch {}
+      await waitForMacroStopped();
+    }
+
+    const settings = { ...data.settings, speedMultiplier: state.speedMultiplier, triggerFromBind: true, macroPath };
     const prevPath = executionMacroPath;
     executionMacroPath = macroPath;
     window.kyrun.executeMacro(data.commands, settings)
@@ -2190,6 +2202,13 @@ const bindSecondPressEl = $('#bind-second-press-stops');
 if (bindSecondPressEl) {
   bindSecondPressEl.onchange = e => {
     state.macroSettings.bindSecondPressStops = e.target.checked;
+    if (state.currentMacro) { state.currentMacro.dirty = true; saveMacro({ silent: true, deferTriggers: true }); }
+  };
+}
+const parallelEl = $('#parallel-enabled');
+if (parallelEl) {
+  parallelEl.onchange = e => {
+    state.macroSettings.parallel = e.target.checked;
     if (state.currentMacro) { state.currentMacro.dirty = true; saveMacro({ silent: true, deferTriggers: true }); }
   };
 }
